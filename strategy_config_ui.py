@@ -31,6 +31,8 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, messagebox
 
+BOT_VERSION = "9.0"
+
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strategy_config.json")
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BOT_SCRIPT_PATH = os.path.join(THIS_DIR, "xauusd_mt5_strategy.py")
@@ -345,7 +347,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self._setup_thai_font()
-        self.title("XAUUSD Strategy Config")
+        self.title(f"XAUUSD Strategy Config — v{BOT_VERSION}")
         self.geometry("760x640")
         self.config_data = self.load()
         self.vars = {}
