@@ -219,6 +219,10 @@ DEFAULT_CONFIG = {
             "scalp_ema_pullback": {"enabled": True, "weight": 1.1},
             "scalp_ny_orb": {"enabled": True, "weight": 0.8},
             "scalp_combo_sweep": {"enabled": True, "weight": 1.4},
+            # 25th: Myfxbook public Community Outlook (retail sentiment).
+            # Scores 0/0 gracefully until Myfxbook is enabled + credentials set.
+            # Weight kept strictly below macro_bias (1.2) — secondary signal only.
+            "myfxbook_sentiment": {"enabled": True, "weight": 0.8},
         },
     },
     "league": {
@@ -239,6 +243,12 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "bot_token": "",
         "chat_id": "",
+    },
+    "myfxbook": {
+        "enabled": False,
+        "email": "",
+        "password": "",
+        "contrarian": True,
     },
     "dashboard_auth": {
         "username": "",
@@ -287,6 +297,7 @@ STRATEGY13_LABELS = {
     "scalp_ema_pullback": "22. Scalping: EMA Pullback (M1, เทรนด์แรงเท่านั้น) 🩳",
     "scalp_ny_orb": "23. Scalping: NY Session Breakout (M5, 19:30-23:00) 🩳",
     "scalp_combo_sweep": "24. Scalping: EMA20+EMA50+Liquidity Sweep ★ (แนะนำที่สุด) 🩳",
+    "myfxbook_sentiment": "25. Myfxbook Retail Sentiment (Community Outlook)",
 }
 
 SESSION_INFO = {
@@ -370,6 +381,7 @@ class App(tk.Tk):
         self.tab_trailing = ttk.Frame(nb)
         self.tab_risk = ttk.Frame(nb)
         self.tab_telegram = ttk.Frame(nb)
+        self.tab_myfxbook = ttk.Frame(nb)
         self.tab_logging = ttk.Frame(nb)
         self.tab_dashboard_auth = ttk.Frame(nb)
         nb.add(self.tab_confluence, text="24 กลยุทธ์ (Confluence)")
@@ -381,6 +393,7 @@ class App(tk.Tk):
         nb.add(self.tab_trailing, text="Trailing Stop")
         nb.add(self.tab_risk, text="Risk & Basket Close")
         nb.add(self.tab_telegram, text="Telegram Alert")
+        nb.add(self.tab_myfxbook, text="Myfxbook Sentiment")
         nb.add(self.tab_logging, text="Log / Debug")
         nb.add(self.tab_dashboard_auth, text="Dashboard Web Access")
 
@@ -393,6 +406,7 @@ class App(tk.Tk):
         self.build_trailing_tab(self.tab_trailing)
         self.build_risk_tab(self.tab_risk)
         self.build_telegram_tab(self.tab_telegram)
+        self.build_myfxbook_tab(self.tab_myfxbook)
         self.build_logging_tab(self.tab_logging)
         self.build_dashboard_auth_tab(self.tab_dashboard_auth)
 
@@ -1023,6 +1037,31 @@ class App(tk.Tk):
         ).grid(row=1, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 8))
         self.reg_entry(frame, s, "bot_token", "Bot Token:", row=2, numeric_type=str, width=40)
         self.reg_entry(frame, s, "chat_id", "Chat ID:", row=3, numeric_type=str, width=20)
+
+    def build_myfxbook_tab(self, parent):
+        frame = ttk.LabelFrame(
+            parent,
+            text="Myfxbook Retail Sentiment — กลยุทธ์ที่ 25 (Community Outlook)",
+        )
+        frame.pack(fill="x", padx=12, pady=12)
+        s = "myfxbook"
+        self.reg_bool(frame, s, "enabled", "เปิดใช้ Myfxbook Sentiment", row=0)
+        ttk.Label(
+            frame,
+            text="กรอกอีเมล/รหัสผ่านบัญชี Myfxbook ของคุณเอง (สมัครฟรีที่ myfxbook.com) เพื่อดึงข้อมูล\n"
+                 "% นักเทรดรายย่อย Long/Short ของ XAUUSD มาเป็นอีก 1 เสียงโหวตใน Confluence engine\n"
+                 "(ไม่ใช่การคัดลอกกลยุทธ์ของใคร — เป็นข้อมูล sentiment สาธารณะเท่านั้น)\n"
+                 "⚠️ อย่าแชร์อีเมล/รหัสผ่านนี้ให้ใครเห็น (รวมถึงไม่ต้องพิมพ์ใส่ในแชทกับ Claude)\n"
+                 "ระบบจะส่งไปที่ myfxbook.com โดยตรงเท่านั้น และเก็บแค่ session token ในเครื่อง ไม่เก็บรหัสผ่าน",
+            wraplength=680, justify="left",
+        ).grid(row=1, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 8))
+        self.reg_entry(frame, s, "email", "Myfxbook Email:", row=2, numeric_type=str, width=30)
+        self.reg_entry(frame, s, "password", "Myfxbook Password:", row=3, numeric_type=str, width=20, show="*")
+        self.reg_bool(
+            frame, s, "contrarian",
+            "Contrarian (Fade the crowd) — ติ๊กออกถ้าต้องการแบบ Trend-following (ตามฝูงชน) แทน",
+            row=4,
+        )
 
     def build_dashboard_auth_tab(self, parent):
         frame = ttk.LabelFrame(parent, text="ตั้งรหัสผ่านสำหรับเปิด Dashboard ผ่านอินเทอร์เน็ต (dashboard_server.py)")

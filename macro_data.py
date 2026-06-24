@@ -85,6 +85,7 @@ import logging
 import os
 import sqlite3
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
@@ -112,7 +113,13 @@ CACHE_TTL = {
     "comex": 6 * 3600,
     "etf_flow": 12 * 3600,
     "fed_expectation": 6 * 3600,
+    "myfxbook": 30 * 60,       # 100 req/day free-tier limit -> 30min keeps us well under it
 }
+
+# Myfxbook login sessions are reused across calls (don't re-login every scan —
+# that burns the daily request quota). TTL is conservative: re-login a bit
+# early rather than get a stale-session error mid-scan.
+_MYFXBOOK_SESSION_TTL = 50 * 60
 
 # How long past the TTL before we send a Telegram stale-data alert (2× TTL).
 _STALE_ALERT_MULTIPLIER = 2.0
@@ -830,13 +837,105 @@ def upcoming_high_impact_events(calendar=None, within_minutes=60,
     return soon
 
 
+# ----------------------------- 9. Myfxbook Community Outlook -----------------
+# Public retail-sentiment data (% of Myfxbook community currently long/short
+# XAUUSD). Contrarian or trend-following — see score_myfxbook_sentiment() in
+# strategies.py. Credentials: requires a free myfxbook.com account's
+# email/password — fill these in via strategy_config_ui.py -> "Myfxbook
+# Sentiment" tab. NEVER type your real Myfxbook email/password into chat with
+# Claude, never log them. Only the resulting session token (never the password)
+# is cached to disk.
+
+def _myfxbook_login(email, password):
+    """POST (as GET, per Myfxbook's own API) login.json -> session token."""
+    if not email or not password:
+        return None
+    url = ("https://www.myfxbook.com/api/login.json?"
+           + urllib.parse.urlencode({"email": email, "password": password}))
+    raw = _http_get(url)
+    j = json.loads(raw)
+    if j.get("error") or not j.get("session"):
+        return None
+    return j["session"]
+
+
+def _get_myfxbook_session(email, password):
+    """Reuses a cached session token (keyed by email) until _MYFXBOOK_SESSION_TTL
+    elapses, to avoid burning the 100-req/day quota on repeated logins."""
+    cache = _load_cache()
+    entry = cache.get("myfxbook_session")
+    now = time.time()
+    if entry and entry.get("email") == email and (now - entry.get("ts", 0)) < _MYFXBOOK_SESSION_TTL:
+        return entry["session"]
+    session = _myfxbook_login(email, password)
+    if session:
+        cache["myfxbook_session"] = {"ts": now, "session": session, "email": email}
+        _save_cache(cache)
+    return session
+
+
+def _myfxbook_outlook(session):
+    url = ("https://www.myfxbook.com/api/get-community-outlook.json?"
+           + urllib.parse.urlencode({"session": session}))
+    raw = _http_get(url)
+    return json.loads(raw)
+
+
+def _fetch_myfxbook_sentiment_raw(symbol, email, password):
+    """Never raises — on any failure returns None so the score degrades to
+    0/0 in that scan rather than blocking the EA."""
+    session = _get_myfxbook_session(email, password)
+    if not session:
+        return None
+    j = _myfxbook_outlook(session)
+    if j.get("error"):
+        # Session may have expired server-side — drop cache and retry once.
+        cache = _load_cache()
+        cache.pop("myfxbook_session", None)
+        _save_cache(cache)
+        session = _get_myfxbook_session(email, password)
+        if not session:
+            return None
+        j = _myfxbook_outlook(session)
+        if j.get("error"):
+            return None
+    symbols = j.get("symbols") or []
+    row = next((s for s in symbols if str(s.get("name", "")).upper() == symbol.upper()), None)
+    if not row:
+        return None
+    return {
+        "symbol": symbol,
+        "long_percentage": float(row.get("longPercentage") or 0),
+        "short_percentage": float(row.get("shortPercentage") or 0),
+        "long_volume": row.get("longVolume"),
+        "short_volume": row.get("shortVolume"),
+        "long_positions": row.get("longPositions"),
+        "short_positions": row.get("shortPositions"),
+        "fetched_at": time.time(),
+    }
+
+
+def fetch_myfxbook_sentiment(symbol="XAUUSD", email=None, password=None):
+    """Cached wrapper. Returns None immediately (zero network calls) if
+    email/password aren't supplied — keeps the feature a true no-op until
+    the user opts in."""
+    if not email or not password:
+        return None
+    return _cached(f"myfxbook_{symbol.lower()}", CACHE_TTL["myfxbook"],
+                   lambda: _fetch_myfxbook_sentiment_raw(symbol, email, password))
+
+
 # ----------------------------- aggregate snapshot -----------------------------
-def get_macro_snapshot(symbol_metal="GOLD"):
+def get_macro_snapshot(symbol_metal="GOLD", myfxbook_email=None,
+                        myfxbook_password=None, myfxbook_symbol="XAUUSD"):
     """One call that gathers everything this module can fetch into a single
     dict, every field independently None-safe. This is what
     xauusd_mt5_strategy.py wires into build_market_data()'s data["macro"],
     and what strategies.score_macro_bias() consumes — see strategies.py for
-    how the 6-point checklist from the reference doc is scored from this."""
+    how the 6-point checklist from the reference doc is scored from this.
+    myfxbook_email/myfxbook_password are optional — pass None to skip the
+    Myfxbook call entirely (it costs a real HTTP request unlike the other
+    cached-only sources here)."""
     etf_ticker = "GLD" if symbol_metal == "GOLD" else "SLV"
     return {
         "comex": fetch_comex_inventory(symbol_metal),
@@ -846,4 +945,6 @@ def get_macro_snapshot(symbol_metal="GOLD"):
         "yield10y": fetch_yield_10y(),
         "fed_expectation": fetch_fed_expectation(),
         "calendar": fetch_economic_calendar(),
+        "myfxbook_sentiment": fetch_myfxbook_sentiment(
+            myfxbook_symbol, myfxbook_email, myfxbook_password),
     }

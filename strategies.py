@@ -1409,6 +1409,43 @@ def score_scalp_combo_sweep(data):
     return {"long": long_score, "short": short_score, "note": note}
 
 
+# ----------------------------- 25. Myfxbook Retail Sentiment ------------------
+def score_myfxbook_sentiment(data):
+    """25th strategy — Myfxbook public Community Outlook (retail long/short %
+    for XAUUSD). Reads data["macro"]["myfxbook_sentiment"]. Degrades gracefully
+    to 0/0 if Myfxbook credentials aren't configured or the fetch failed.
+
+    Two modes via data["myfxbook_contrarian"] (default True):
+      contrarian=True  — fade the crowd (default, recommended)
+      contrarian=False — vote with the crowd
+
+    Weight (0.8) is intentionally below macro_bias (1.2) — retail sentiment
+    from one broker is a secondary confirming vote, not a primary signal.
+    """
+    macro = data.get("macro")
+    if macro is None:
+        return {"long": 0.0, "short": 0.0, "note": "macro data unavailable"}
+    sentiment = macro.get("myfxbook_sentiment")
+    if not sentiment:
+        return {"long": 0.0, "short": 0.0,
+                "note": "Myfxbook sentiment unavailable (not configured, or fetch pending/failed)"}
+    long_pct = float(sentiment.get("long_percentage") or 0)
+    short_pct = float(sentiment.get("short_percentage") or 0)
+    if long_pct == 0 and short_pct == 0:
+        return {"long": 0.0, "short": 0.0,
+                "note": "Myfxbook sentiment returned no data for this symbol"}
+    contrarian = data.get("myfxbook_contrarian", True)
+    if contrarian:
+        long_score, short_score = short_pct, long_pct
+        mode_label = "contrarian — fading the crowd"
+    else:
+        long_score, short_score = long_pct, short_pct
+        mode_label = "trend-following — with the crowd"
+    note = (f"Myfxbook retail sentiment: {long_pct:.0f}% long / {short_pct:.0f}% short "
+            f"({mode_label})")
+    return {"long": _clip(long_score), "short": _clip(short_score), "note": note}
+
+
 # ----------------------------- registry + aggregation ---------------------------
 STRATEGY_REGISTRY = {
     "order_block": ("Order Block (ICT)", score_order_block),
@@ -1449,6 +1486,10 @@ STRATEGY_REGISTRY = {
     "scalp_ema_pullback": ("Scalping: EMA Pullback (M1)", score_scalp_ema_pullback),
     "scalp_ny_orb": ("Scalping: NY Session Breakout", score_scalp_ny_orb),
     "scalp_combo_sweep": ("Scalping: EMA20+EMA50+Liquidity Sweep ★", score_scalp_combo_sweep),
+    # ---- 25th: Myfxbook public Community Outlook (retail sentiment).
+    # Reads data["macro"]["myfxbook_sentiment"] — scores 0/0 gracefully until
+    # Myfxbook credentials are configured in the UI. Weight kept below macro_bias.
+    "myfxbook_sentiment": ("Myfxbook Retail Sentiment", score_myfxbook_sentiment),
 }
 
 DEFAULT_VOTE_THRESHOLD = 50.0  # a strategy's score on a side must be >= this

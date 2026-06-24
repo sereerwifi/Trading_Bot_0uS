@@ -377,6 +377,15 @@ TELEGRAM_ENABLED = False
 TELEGRAM_BOT_TOKEN = ""
 TELEGRAM_CHAT_ID = ""
 
+# --- Myfxbook Sentiment (25th strategy) ---------------------------------------
+# Fill these in via strategy_config_ui.py -> "Myfxbook Sentiment" tab (or
+# directly in strategy_config.json under "myfxbook"). Only the session token,
+# never the password, is cached to disk by macro_data.py.
+MYFXBOOK_ENABLED = False
+MYFXBOOK_EMAIL = ""
+MYFXBOOK_PASSWORD = ""
+MYFXBOOK_CONTRARIAN = True   # True = fade the crowd (default); False = follow crowd
+
 # --- Stop on Error -----------------------------------------------------------
 # Fill these in via strategy_config_ui.py -> "Log / Debug" tab (or directly in
 # strategy_config.json under "error_handling"). Default is OFF: a single bad
@@ -513,6 +522,7 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     global SHADOW_SIMULATION_ENABLED, LEAGUE_MIN_SAMPLES_FOR_ADJUSTMENT
     global BREAKEVEN_ENABLED, BREAKEVEN_TRIGGER_R, BREAKEVEN_BUFFER_POINTS
     global TELEGRAM_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    global MYFXBOOK_ENABLED, MYFXBOOK_EMAIL, MYFXBOOK_PASSWORD, MYFXBOOK_CONTRARIAN
     global STOP_ON_ERROR, MAX_ERRORS_BEFORE_STOP
     global NOTIFY_STARTUP, NOTIFY_SIGNAL, NOTIFY_ORDER_OPEN, NOTIFY_ORDER_CLOSE
     global NOTIFY_MACRO_UPDATE, NOTIFY_PRE_NEWS, NOTIFY_POST_NEWS, NOTIFY_DAILY_STATUS
@@ -647,6 +657,12 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     TELEGRAM_ENABLED = bool(tg_cfg.get("enabled", TELEGRAM_ENABLED))
     TELEGRAM_BOT_TOKEN = tg_cfg.get("bot_token", TELEGRAM_BOT_TOKEN)
     TELEGRAM_CHAT_ID = tg_cfg.get("chat_id", TELEGRAM_CHAT_ID)
+
+    mfb_cfg = cfg.get("myfxbook", {})
+    MYFXBOOK_ENABLED = bool(mfb_cfg.get("enabled", MYFXBOOK_ENABLED))
+    MYFXBOOK_EMAIL = mfb_cfg.get("email", MYFXBOOK_EMAIL)
+    MYFXBOOK_PASSWORD = mfb_cfg.get("password", MYFXBOOK_PASSWORD)
+    MYFXBOOK_CONTRARIAN = bool(mfb_cfg.get("contrarian", MYFXBOOK_CONTRARIAN))
 
     err_cfg = cfg.get("error_handling", {})
     STOP_ON_ERROR = bool(err_cfg.get("stop_on_error", STOP_ON_ERROR))
@@ -1573,7 +1589,14 @@ def get_macro_snapshot_safe():
     unexpected error this returns None and score_macro_bias() treats that
     exactly like DOM-unsupported: a graceful 0/0, never an exception."""
     try:
-        return macro_data.get_macro_snapshot("GOLD" if SYMBOL.upper().startswith(("GOLD", "XAU")) else "SILVER")
+        metal = "GOLD" if SYMBOL.upper().startswith(("GOLD", "XAU")) else "SILVER"
+        mfb_symbol = "XAUUSD" if metal == "GOLD" else "XAGUSD"
+        return macro_data.get_macro_snapshot(
+            metal,
+            myfxbook_email=(MYFXBOOK_EMAIL if MYFXBOOK_ENABLED else None),
+            myfxbook_password=(MYFXBOOK_PASSWORD if MYFXBOOK_ENABLED else None),
+            myfxbook_symbol=mfb_symbol,
+        )
     except Exception:
         logger.exception("macro_data.get_macro_snapshot() failed — macro_bias strategy will score 0/0 this scan.")
         return None
@@ -1598,7 +1621,8 @@ def build_market_data():
     dom = get_dom_snapshot(SYMBOL)
     macro = get_macro_snapshot_safe()
     return {"d1": df_d1, "h4": df_h4, "h1": df_h1, "m15": df_m15, "m5": df_m5, "m1": df_m1,
-            "now": datetime.now(), "dom": dom, "macro": macro}
+            "now": datetime.now(), "dom": dom, "macro": macro,
+            "myfxbook_contrarian": MYFXBOOK_CONTRARIAN}
 
 
 def _load_json(path, default):
