@@ -481,11 +481,10 @@ def setup_logging(log_dir=None, level=None, to_console=None, max_bytes=None, bac
 
     if to_console:
         try:
-            import io as _io
-            _stream = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="backslashreplace")
+            sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
         except Exception:
-            _stream = sys.stdout
-        console_handler = logging.StreamHandler(_stream)
+            pass
+        console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
