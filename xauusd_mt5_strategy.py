@@ -470,7 +470,12 @@ def setup_logging(log_dir=None, level=None, to_console=None, max_bytes=None, bac
     logger.addHandler(file_handler)
 
     if to_console:
-        console_handler = logging.StreamHandler()
+        try:
+            import io as _io
+            _stream = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            _stream = sys.stdout
+        console_handler = logging.StreamHandler(_stream)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
@@ -1609,7 +1614,7 @@ def _load_json(path, default):
 def _save_json(path, data):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
+        json.dump(data, f, indent=2, default=str, ensure_ascii=False)
     for attempt in range(3):
         try:
             os.replace(tmp, path)

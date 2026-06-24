@@ -50,7 +50,7 @@ def save_state(state, path=STATE_PATH):
     import time as _time
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
+        json.dump(state, f, indent=2, ensure_ascii=False)
     for attempt in range(3):
         try:
             os.replace(tmp_path, path)

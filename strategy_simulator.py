@@ -69,7 +69,7 @@ def load_state(path=STATE_PATH):
 def save_state(state, path=STATE_PATH):
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
+        json.dump(state, f, indent=2, ensure_ascii=False)
     os.replace(tmp_path, path)
 
 

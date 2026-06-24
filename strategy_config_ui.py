@@ -28,6 +28,7 @@ import sys
 import time
 import webbrowser
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strategy_config.json")
@@ -343,6 +344,7 @@ class ScrollFrame(ttk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        self._setup_thai_font()
         self.title("XAUUSD Strategy Config")
         self.geometry("760x640")
         self.config_data = self.load()
@@ -733,6 +735,26 @@ class App(tk.Tk):
             if not keep:
                 self.stop_bot()
         self.destroy()
+
+    # ---------- Thai font ----------
+    def _setup_thai_font(self):
+        """Sets Leelawadee UI (Windows 10+ standard Thai font) as the app-wide
+        default so all Thai labels render as real characters, not empty boxes.
+        Falls back to Tahoma (older but still has full Thai coverage), then
+        leaves Tk's default unchanged if neither is available (e.g. macOS/Linux)."""
+        candidates = ["Leelawadee UI", "Tahoma"]
+        available = set(tkfont.families())
+        chosen = next((f for f in candidates if f in available), None)
+        if chosen:
+            for name in ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont"):
+                try:
+                    tkfont.nametofont(name).configure(family=chosen, size=10)
+                except Exception:
+                    pass
+            try:
+                ttk.Style().configure(".", font=(chosen, 10))
+            except Exception:
+                pass
 
     # ---------- stale-process cleanup ----------
     def kill_stale_processes(self, log_fn=None):
