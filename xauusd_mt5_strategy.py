@@ -74,6 +74,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 from datetime import datetime, time as dtime
+import sys
 import time
 import json
 import os
