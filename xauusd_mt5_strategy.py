@@ -181,6 +181,17 @@ TRADING_HOURS_FILTER_ENABLED = True
 ALLOWED_SESSIONS = {"all_day"}  # default: trade around the clock; switch to
                                  # "overlap" / "london" / "asia" to narrow it
 
+# --- Real market-open/closed detection (broker ground truth) -----------------
+# TRADING_HOURS_FILTER_ENABLED / ALLOWED_SESSIONS answer "do I WANT to trade
+# right now"; the settings below answer "CAN I trade right now at all" --
+# weekends, broker holidays, or a stalled/disconnected price feed. Both gates
+# are checked independently; either one can block a new entry.
+MARKET_HOURS_CHECK_ENABLED = True
+MARKET_CLOSED_MAX_TICK_AGE_SEC = 180   # last tick older than this = treat as stale/closed
+MARKET_CLOSED_NOTIFY = True            # one Telegram alert per open<->closed transition
+MARKET_PRICE_SANITY_CHECK_ENABLED = False   # off by default (extra HTTP call per tick)
+MARKET_PRICE_SANITY_TOLERANCE_PCT = 1.0
+
 AUTO_TRADE = False             # safety gate — see docstring above
 POLL_SECONDS = 60 * 15         # check every 15 minutes
 MAGIC_NUMBER = 20260618
@@ -430,6 +441,7 @@ POST_NEWS_WINDOW_MINUTES = 30        # how long after a release to keep trying
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 ENTRY_META_PATH = os.path.join(_THIS_DIR, "open_entry_meta.json")          # ticket -> contributing strategies
 SCORES_SNAPSHOT_PATH = os.path.join(_THIS_DIR, "strategy_scores.json")     # latest scan, for the dashboard
+MARKET_STATE_PATH    = os.path.join(_THIS_DIR, "market_state.json")         # market open/closed status, updated every tick
 PROCESSED_DEALS_PATH = os.path.join(_THIS_DIR, "processed_deals.json")    # avoids double-counting league results
 NEWS_ALERT_STATE_PATH = os.path.join(_THIS_DIR, "news_alert_state.json")  # dedupes pre/post-news alerts
 BOT_STATE_PATH = os.path.join(_THIS_DIR, "bot_state.json")                # records this process's start time, for dashboard uptime
@@ -516,6 +528,8 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     global MIN_LOT, MAX_LOT, ENFORCE_MIN_LOT, MAX_DAILY_TRADES, MAX_DRAWDOWN_PCT, DAILY_LOSS_LIMIT_R
     global MIN_RISK_REWARD_RATIO, MAX_CONSECUTIVE_LOSSES
     global TRADING_HOURS_FILTER_ENABLED, ALLOWED_SESSIONS
+    global MARKET_HOURS_CHECK_ENABLED, MARKET_CLOSED_MAX_TICK_AGE_SEC, MARKET_CLOSED_NOTIFY
+    global MARKET_PRICE_SANITY_CHECK_ENABLED, MARKET_PRICE_SANITY_TOLERANCE_PCT
     global LOG_DIR, LOG_LEVEL, LOG_TO_CONSOLE, LOG_FILE_MAX_BYTES, LOG_BACKUP_COUNT
     global ENTRY_MODE, SCAN_INTERVAL_SECONDS, MIN_STRATEGY_SCORE, MIN_AGREEING_STRATEGIES
     global LOGIC_GROUP_SELECTION, LOGIC_GROUPS_APPLY_DAILY_FILTER
@@ -599,6 +613,13 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     sessions_cfg = th.get("sessions", {})
     if sessions_cfg:
         ALLOWED_SESSIONS = {k for k, v in sessions_cfg.items() if v}
+
+    mh = cfg.get("market_hours", {})
+    MARKET_HOURS_CHECK_ENABLED = bool(mh.get("enabled", MARKET_HOURS_CHECK_ENABLED))
+    MARKET_CLOSED_MAX_TICK_AGE_SEC = float(mh.get("max_tick_age_sec", MARKET_CLOSED_MAX_TICK_AGE_SEC))
+    MARKET_CLOSED_NOTIFY = bool(mh.get("notify", MARKET_CLOSED_NOTIFY))
+    MARKET_PRICE_SANITY_CHECK_ENABLED = bool(mh.get("price_sanity_enabled", MARKET_PRICE_SANITY_CHECK_ENABLED))
+    MARKET_PRICE_SANITY_TOLERANCE_PCT = float(mh.get("price_sanity_tolerance_pct", MARKET_PRICE_SANITY_TOLERANCE_PCT))
 
     lg = cfg.get("logging", {})
     LOG_DIR = lg.get("log_dir", LOG_DIR)
@@ -1497,6 +1518,97 @@ def is_within_trading_hours(now=None):
         if start_t <= t <= end_t:
             return True, key
     return False, None
+
+
+_LAST_MARKET_OPEN_STATE = None  # None = unknown yet; True/False after first check
+
+
+def is_market_open(max_tick_age_sec=None):
+    """Broker ground-truth check: can SYMBOL actually be traded right now?
+    Weekends, broker holidays, and a stalled/disconnected feed all show up
+    here, independent of is_within_trading_hours()'s user-preference window.
+    Returns (open: bool, reason: str).
+
+    Two independent checks — either one can mark the market closed:
+      1. mt5.symbol_info(SYMBOL).trade_mode = SYMBOL_TRADE_MODE_DISABLED
+         (broker's own flag for holidays/maintenance).
+      2. Tick freshness — last tick older than max_tick_age_sec means the
+         feed is stale or the market is genuinely closed (no ticks arrive
+         during weekend gaps even when MT5 stays "connected")."""
+    if not MARKET_HOURS_CHECK_ENABLED:
+        return True, "market-hours check disabled"
+    max_age = max_tick_age_sec if max_tick_age_sec is not None else MARKET_CLOSED_MAX_TICK_AGE_SEC
+    sym_info = mt5.symbol_info(SYMBOL)
+    if sym_info is None:
+        return False, f"symbol_info({SYMBOL}) unavailable -- not subscribed / not found"
+    if sym_info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
+        return False, f"broker reports {SYMBOL} trading disabled (holiday/maintenance)"
+    tick = mt5.symbol_info_tick(SYMBOL)
+    if tick is None or not tick.time:
+        return False, f"no tick data for {SYMBOL} -- feed disconnected or market closed"
+    tick_age = time.time() - tick.time
+    if tick_age > max_age:
+        return False, (f"last tick for {SYMBOL} is {tick_age:.0f}s old "
+                       f"(> {max_age}s threshold) -- feed stale or market closed")
+    return True, f"market open (last tick {tick_age:.0f}s ago)"
+
+
+def check_market_hours_and_notify():
+    """Wraps is_market_open() with a one-time-per-transition Telegram alert
+    and writes market_state.json for the dashboard. Call once per main-loop
+    iteration before the new-entry scan. Returns (open, reason)."""
+    global _LAST_MARKET_OPEN_STATE
+    is_open, reason = is_market_open()
+    if MARKET_CLOSED_NOTIFY and TELEGRAM_ENABLED and _LAST_MARKET_OPEN_STATE is not None:
+        if _LAST_MARKET_OPEN_STATE and not is_open:
+            try:
+                send_telegram(telegram_alert.format_market_closed_alert(SYMBOL, reason))
+            except Exception:
+                logger.exception("Failed to send market-closed Telegram alert.")
+        elif not _LAST_MARKET_OPEN_STATE and is_open:
+            try:
+                send_telegram(telegram_alert.format_market_reopened_alert(SYMBOL, reason))
+            except Exception:
+                logger.exception("Failed to send market-reopened Telegram alert.")
+    if is_open != _LAST_MARKET_OPEN_STATE:
+        logger.info(f"Market status -> {'OPEN' if is_open else 'CLOSED'} ({reason})")
+    _LAST_MARKET_OPEN_STATE = is_open
+    try:
+        _save_json(MARKET_STATE_PATH, {
+            "timestamp": datetime.now().isoformat(),
+            "market_open": is_open,
+            "market_reason": reason,
+            "symbol": SYMBOL,
+        })
+    except Exception:
+        pass
+    return is_open, reason
+
+
+def check_price_sanity():
+    """Cross-checks the broker's current tick against a free independent
+    reference price (macro_data.fetch_reference_gold_price()). Logs a
+    warning if they diverge beyond MARKET_PRICE_SANITY_TOLERANCE_PCT.
+    LOGGING/ALERTING only — never overrides the broker price for trading.
+    Returns True if passed/skipped, False if both prices available and diverged."""
+    if not MARKET_PRICE_SANITY_CHECK_ENABLED:
+        return True
+    tick = mt5.symbol_info_tick(SYMBOL)
+    if tick is None:
+        return True
+    ref = macro_data.fetch_reference_gold_price()
+    if ref is None or not ref.get("price"):
+        return True
+    broker_mid = (tick.bid + tick.ask) / 2.0
+    diff_pct = abs(broker_mid - ref["price"]) / ref["price"] * 100.0
+    if diff_pct > MARKET_PRICE_SANITY_TOLERANCE_PCT:
+        logger.warning(
+            f"Price sanity: broker mid {broker_mid:.2f} vs reference "
+            f"{ref['price']:.2f} ({ref['source']}) diverge {diff_pct:.2f}% "
+            f"(> {MARKET_PRICE_SANITY_TOLERANCE_PCT}% tolerance) -- feed may be stale."
+        )
+        return False
+    return True
 
 
 def check_consecutive_loss_breaker():
@@ -2698,6 +2810,12 @@ def main():
                 check_post_news_notify()
                 check_daily_status_notify()
 
+                # Real market-open check (broker ground truth) -- separate
+                # from is_within_trading_hours()'s user-preference window.
+                # Cheap (one symbol_info + one tick read) so runs every tick.
+                market_open, market_reason = check_market_hours_and_notify()
+                check_price_sanity()
+
                 # New-entry scan. ENTRY_MODE selects which engine runs and on
                 # what cadence: "confluence13" (default) scans all strategies
                 # every SCAN_INTERVAL_SECONDS; "logic_groups" runs the
@@ -2705,7 +2823,9 @@ def main():
                 # cadence; "legacy" runs the original single fib-retracement
                 # check on POLL_SECONDS.
                 scan_interval = SCAN_INTERVAL_SECONDS if ENTRY_MODE in ("confluence13", "logic_groups") else POLL_SECONDS
-                if now - last_signal_scan >= scan_interval:
+                if not market_open:
+                    logger.debug(f"Market closed/feed stale ({market_reason}) -- no new-entry scan this tick.")
+                elif now - last_signal_scan >= scan_interval:
                     if ENTRY_MODE == "confluence13":
                         run_confluence_scan()
                     elif ENTRY_MODE == "logic_groups":

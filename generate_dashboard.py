@@ -441,12 +441,27 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
     if state in ("STOPPED", "UNKNOWN") and uptime_str != "-":
         uptime_detail += " (process ไม่ตอบสนองแล้ว — เวลานี้คือรอบที่แล้ว)"
 
+    # ---- market open/closed badge (from market_state.json written each loop tick) ----
+    market_state_path = getattr(ea, "MARKET_STATE_PATH",
+                                os.path.join(os.path.dirname(os.path.abspath(__file__)), "market_state.json"))
+    mkt = _load_dashboard_json(market_state_path, {})
+    mkt_open = mkt.get("market_open")
+    mkt_reason = mkt.get("market_reason", "")
+    mkt_ts = mkt.get("timestamp", "")
+    if mkt_open is None:
+        mkt_pill = "pill-warn"; mkt_label = "UNKNOWN"; mkt_note = "ยังไม่มีข้อมูล (รอบสแกนแรก)"
+    elif mkt_open:
+        mkt_pill = "pill-ok"; mkt_label = "OPEN"; mkt_note = esc(mkt_reason)
+    else:
+        mkt_pill = "pill-bad"; mkt_label = "CLOSED / PAUSED"; mkt_note = esc(mkt_reason)
+
     bot_status_card = f"""
     <div class="card"><div class="card-label">EA Process</div><div class="card-value"><span class="pill {state_pill_cls}">{esc(state)}</span></div><div class="msg" style="font-size:12px;margin-top:6px">{freshness_detail}</div></div>
     <div class="card"><div class="card-label">Bot Running Time</div><div class="card-value" style="font-size:20px">{esc(uptime_str)}</div><div class="msg" style="font-size:12px;margin-top:6px">{uptime_detail}</div></div>
     <div class="card"><div class="card-label">MT5 Connection</div><div class="card-value"><span class="pill {'pill-ok' if snap['mt5_connected'] else 'pill-bad'}">{'CONNECTED' if snap['mt5_connected'] else 'DISCONNECTED'}</span></div></div>
     <div class="card"><div class="card-label">Entry Mode</div><div class="card-value" style="font-size:17px">{esc(getattr(ea, 'ENTRY_MODE', '-'))}</div></div>
     <div class="card"><div class="card-label">Auto Trade</div><div class="card-value"><span class="pill {'pill-ok' if getattr(ea, 'AUTO_TRADE', False) else 'pill-warn'}">{'ON' if getattr(ea, 'AUTO_TRADE', False) else 'OFF (signal-only)'}</span></div></div>
+    <div class="card"><div class="card-label">Market Status</div><div class="card-value"><span class="pill {mkt_pill}">{mkt_label}</span></div><div class="msg" style="font-size:12px;margin-top:6px">{mkt_note}</div></div>
     """
 
     # ---- economic calendar / forecast ----

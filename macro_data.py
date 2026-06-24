@@ -932,6 +932,21 @@ def fetch_myfxbook_sentiment(symbol="XAUUSD", email=None, password=None):
                    lambda: _fetch_myfxbook_sentiment_raw(symbol, email, password))
 
 
+# ----------------------------- price sanity cross-check ----------------------
+def fetch_reference_gold_price():
+    """Free, no-key spot/futures gold quote from Yahoo Finance (GC=F COMEX
+    gold futures). Used ONLY to sanity-check the broker's own tick against
+    an independent source — NEVER fed into scoring or order placement.
+    Returns None on any failure, never raises."""
+    try:
+        raw = _http_get("https://query1.finance.yahoo.com/v8/finance/chart/GC=F")
+        j = json.loads(raw)
+        price = j["chart"]["result"][0]["meta"]["regularMarketPrice"]
+        return {"price": float(price), "source": "yahoo_gc_f", "fetched_at": time.time()}
+    except Exception:
+        return None
+
+
 # ----------------------------- aggregate snapshot -----------------------------
 def get_macro_snapshot(symbol_metal="GOLD", myfxbook_email=None,
                         myfxbook_password=None, myfxbook_symbol="XAUUSD"):

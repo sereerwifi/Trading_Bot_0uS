@@ -209,6 +209,21 @@ def format_post_news_alert(event, impact_note=None):
     return "\n".join(lines)
 
 
+def format_market_closed_alert(symbol, reason):
+    lbl = symbol_normalize.display_label(symbol)
+    return (f"⏸️ <b>{lbl} — Market Closed</b>\n"
+            f"New-entry scanning is paused.\n"
+            f"Reason: {reason}\n"
+            f"Open positions (if any) keep being managed (trailing/basket-close) as normal.")
+
+
+def format_market_reopened_alert(symbol, reason):
+    lbl = symbol_normalize.display_label(symbol)
+    return (f"▶️ <b>{lbl} — Market Reopened</b>\n"
+            f"New-entry scanning has resumed.\n"
+            f"Status: {reason}")
+
+
 def format_daily_status_alert(account_info, open_positions_count, today_pnl=None, today_trades=None, symbol=None):
     """Builds the once-daily (default 08:00) bot-status heartbeat message."""
     lbl = symbol_normalize.display_label(symbol or "XAUUSD")

@@ -142,6 +142,13 @@ DEFAULT_CONFIG = {
             "all_day": True,
         },
     },
+    "market_hours": {
+        "enabled": True,
+        "max_tick_age_sec": 180,
+        "notify": True,
+        "price_sanity_enabled": False,
+        "price_sanity_tolerance_pct": 1.0,
+    },
     "logging": {
         "level": "INFO",
         "log_to_console": True,
@@ -1185,6 +1192,31 @@ class App(tk.Tk):
             self.reg_bool(frame, "trading_hours", f"sessions.{key}", "เลือกช่วงเวลานี้", row=0)
             ttk.Label(frame, text=info["desc"], wraplength=680, justify="left").grid(
                 row=1, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 6))
+
+        mh_frame = ttk.LabelFrame(parent, text="ตรวจสอบตลาดเปิด-ปิด / ความแม่นยำราคา (Market Hours & Price Sanity)")
+        mh_frame.pack(fill="x", padx=12, pady=12)
+        s = "market_hours"
+        ttk.Label(
+            mh_frame,
+            text="ตรวจสอบสถานะตลาดจริงจากโบรกเกอร์ทุกรอบ loop (ไม่ใช่แค่กรองช่วงเวลาข้างบน):\n"
+                 "• ถ้าโบรกเกอร์รายงาน trade_mode=DISABLED (วันหยุด/ปิดซ่อม) → หยุดเข้าออเดอร์ใหม่\n"
+                 "• ถ้า tick ล่าสุดเก่าเกินกำหนด (feed ค้าง/ตลาดปิดจริง) → หยุดเข้าออเดอร์ใหม่\n"
+                 "• ไม่กระทบ trailing stop / basket-close ที่ยังทำงานต่อเพื่อดูแลออเดอร์ที่เปิดอยู่",
+            wraplength=680, justify="left",
+        ).grid(row=0, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 8))
+        self.reg_bool(mh_frame, s, "enabled", "เปิดใช้การตรวจสอบตลาดเปิด-ปิดจริง (แนะนำให้เปิดไว้)", row=1)
+        self.reg_entry(mh_frame, s, "max_tick_age_sec",
+                       "อายุ tick สูงสุดก่อนถือว่าตลาดปิด/feed ค้าง (วินาที, default 180):",
+                       row=2, numeric_type=float)
+        self.reg_bool(mh_frame, s, "notify",
+                      "แจ้งเตือน Telegram ตอนตลาดปิด/เปิดใหม่ (แจ้งครั้งเดียวต่อการเปลี่ยนสถานะ ไม่ spam)",
+                      row=3)
+        self.reg_bool(mh_frame, s, "price_sanity_enabled",
+                      "ตรวจสอบราคาเทียบแหล่งอ้างอิงภายนอก Yahoo Finance (GC=F) — log เตือนเท่านั้น ไม่บล็อกออเดอร์",
+                      row=4)
+        self.reg_entry(mh_frame, s, "price_sanity_tolerance_pct",
+                       "ค่าเบี่ยงเบนสูงสุดที่ยอมรับ (%, default 1.0):",
+                       row=5, numeric_type=float)
 
     def build_trailing_tab(self, parent):
         frame = ttk.Frame(parent)
