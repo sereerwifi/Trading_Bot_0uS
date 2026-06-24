@@ -1,0 +1,33 @@
+# Secrets — never commit
+strategy_config.json
+
+# Runtime / generated state
+bot_state.json
+strategy_scores.json
+strategy_league.json
+shadow_positions.json
+open_entry_meta.json
+processed_deals.json
+manual_trades.json
+macro_data_cache.json
+macro_data_history.db
+dashboard.html
+
+# Logs and backups (can be large)
+logs/
+backups/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+
+# Claude Code session data
+.claude/
