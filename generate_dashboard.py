@@ -176,19 +176,59 @@ def _load_dashboard_json(path, default):
         return default
 
 
+def _pid_is_alive(pid):
+    """Returns True if the given PID is a running process on this machine."""
+    if not pid:
+        return False
+    try:
+        import psutil
+        return psutil.pid_exists(int(pid))
+    except Exception:
+        pass
+    try:
+        import os, signal
+        os.kill(int(pid), 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except Exception:
+        return False
+
+
+def _scores_freshness_seconds():
+    """Returns how many seconds ago strategy_scores.json was last written,
+    or None if unavailable. The bot writes this file every scan loop tick
+    so it's a reliable heartbeat even when the log is quiet."""
+    scores_path = getattr(ea, "SCORES_SNAPSHOT_PATH",
+                          os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       "strategy_scores.json"))
+    try:
+        data = _load_dashboard_json(scores_path, {})
+        ts_str = data.get("timestamp")
+        if not ts_str:
+            return None
+        ts = datetime.fromisoformat(ts_str)
+        return (datetime.now() - ts).total_seconds()
+    except Exception:
+        return None
+
+
 def collect_bot_status(latest_entries):
-    """Infers whether the EA process itself is actively running (not just
-    whether MT5 is connected) by checking how fresh the last log line is
-    against the EA's own scan cadence. The EA logs at least a debug/info line
-    every loop tick (every TRAILING_CHECK_SECONDS, default ~30s) regardless
-    of whether a signal fires, so a log that's gone quiet for several times
-    that interval means the process has stopped or hung, even if MT5 itself
-    is still reachable."""
+    """Determines whether the EA process is running using three signals in
+    priority order:
+      1. PID check — if bot_state.json has a PID that's still alive, RUNNING.
+      2. strategy_scores.json freshness — bot writes this every scan tick;
+         if it's fresh the bot is alive even when the log is quiet (e.g.
+         no signals firing, no open trades to trail).
+      3. Log freshness — original fallback; stale log = STALE/STOPPED.
+    This prevents false STOPPED reports when the bot is scanning normally
+    but has nothing interesting enough to log."""
     status = {"state": "UNKNOWN", "last_log_ts": None, "seconds_since": None,
               "started_at": None, "uptime_seconds": None}
 
     bot_state = _load_dashboard_json(getattr(ea, "BOT_STATE_PATH", ""), {})
     started_at_str = bot_state.get("started_at")
+    pid = bot_state.get("pid")
     if started_at_str:
         status["started_at"] = started_at_str
         try:
@@ -197,6 +237,30 @@ def collect_bot_status(latest_entries):
         except ValueError:
             pass
 
+    tick_interval = getattr(ea, "TRAILING_CHECK_SECONDS", 30)
+    stale_threshold = max(tick_interval * 4, 120)
+
+    # --- Signal 1: PID alive ---
+    if _pid_is_alive(pid):
+        status["state"] = "RUNNING"
+        # Still populate log-based fields for the dashboard detail line.
+        if latest_entries:
+            last_ts_str = latest_entries[0]["ts"]
+            status["last_log_ts"] = last_ts_str
+            try:
+                last_ts = datetime.strptime(last_ts_str, "%Y-%m-%d %H:%M:%S")
+                status["seconds_since"] = (datetime.now() - last_ts).total_seconds()
+            except ValueError:
+                pass
+        return status
+
+    # --- Signal 2: strategy_scores.json freshness ---
+    scores_age = _scores_freshness_seconds()
+    if scores_age is not None and scores_age <= stale_threshold:
+        status["state"] = "RUNNING"
+        return status
+
+    # --- Signal 3: log freshness (original logic) ---
     if not latest_entries:
         status["state"] = "STOPPED"
         return status
@@ -211,8 +275,6 @@ def collect_bot_status(latest_entries):
     seconds_since = (datetime.now() - last_ts).total_seconds()
     status["seconds_since"] = seconds_since
 
-    tick_interval = getattr(ea, "TRAILING_CHECK_SECONDS", 30)
-    stale_threshold = max(tick_interval * 4, 120)  # generous buffer, avoids false alarms
     if seconds_since <= stale_threshold:
         status["state"] = "RUNNING"
     elif seconds_since <= stale_threshold * 3:
