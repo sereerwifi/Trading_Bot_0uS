@@ -223,6 +223,9 @@ DEFAULT_CONFIG = {
             # Scores 0/0 gracefully until Myfxbook is enabled + credentials set.
             # Weight kept strictly below macro_bias (1.2) — secondary signal only.
             "myfxbook_sentiment": {"enabled": True, "weight": 0.8},
+            # 26th: extreme/exhausted directional move that slams into a fresh
+            # extreme or known S/R level and snaps back with a rejection candle.
+            "climax_reversal_sr": {"enabled": True, "weight": 1.0},
         },
     },
     "league": {
@@ -298,6 +301,7 @@ STRATEGY13_LABELS = {
     "scalp_ny_orb": "23. Scalping: NY Session Breakout (M5, 19:30-23:00) 🩳",
     "scalp_combo_sweep": "24. Scalping: EMA20+EMA50+Liquidity Sweep ★ (แนะนำที่สุด) 🩳",
     "myfxbook_sentiment": "25. Myfxbook Retail Sentiment (Community Outlook)",
+    "climax_reversal_sr": "26. Climax Reversal at Support/Resistance ★",
 }
 
 SESSION_INFO = {

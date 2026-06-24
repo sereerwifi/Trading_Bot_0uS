@@ -324,6 +324,8 @@ _RECOMMENDED_STRATEGY_WEIGHTS = {
     "order_flow_dom": 1.0, "macro_bias": 1.2,
     "scalp_london_sweep": 1.0, "scalp_ema_pullback": 1.1, "scalp_ny_orb": 0.8,
     "scalp_combo_sweep": 1.4,  # the user's "most recommended" 4-layer combo setup
+    "myfxbook_sentiment": 0.8,  # must stay below macro_bias's 1.2 (Big Data) per user's rule
+    "climax_reversal_sr": 1.0,  # 26th -- extreme/exhausted move + S/R + rejection candle
 }
 STRATEGY_WEIGHTS = {k: _RECOMMENDED_STRATEGY_WEIGHTS.get(k, 1.0) for k in strategies.STRATEGY_REGISTRY}
 # Which of the (now 24) confluence strategies are turned on at all (a disabled strategy is

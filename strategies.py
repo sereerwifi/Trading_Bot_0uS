@@ -1446,6 +1446,92 @@ def score_myfxbook_sentiment(data):
     return {"long": _clip(long_score), "short": _clip(short_score), "note": note}
 
 
+# ----------------------------- 26. Climax Reversal at S/R -----------------------
+def score_climax_reversal_sr(data, move_lookback=8, atr_mult_extreme=2.5,
+                              sr_lookback=80, proximity_atr=0.4):
+    """26th strategy — catches a sharp reversal right after an extreme,
+    exhausted directional move slams into a support/resistance zone: a
+    strong multi-bar push in one direction, arriving at a fresh price
+    extreme or a prior swing level, then a sharp rejection candle (pin
+    bar / engulfing) snapping price back the other way.
+
+    Two gates must BOTH be true before this strategy votes at all:
+      1. EXHAUSTION: net move over the last move_lookback H1 bars must be
+         at least atr_mult_extreme x ATR(14) in one direction.
+      2. AT A LEVEL: the bar's low/high is either a fresh sr_lookback-bar
+         extreme OR within proximity_atr x ATR of an existing swing S/R.
+
+    Votes on the last closed H1 bar's close — immediate entry signal,
+    no separate breakout/pending-order logic."""
+    df = data["h1"].tail(max(sr_lookback, move_lookback) + 10).reset_index(drop=True)
+    if len(df) < move_lookback + 15:
+        return {"long": 0.0, "short": 0.0, "note": "insufficient H1 data"}
+
+    atr_now = data["h1"]["atr14"].iloc[-1]
+    atr_now = atr_now if atr_now and not pd.isna(atr_now) else (df["high"] - df["low"]).tail(20).mean()
+    atr_now = max(atr_now, 1e-6)
+
+    last, prev = df.iloc[-1], df.iloc[-2]
+
+    # Gate 1: exhaustion — net move over move_lookback bars vs ATR
+    ref_close = df["close"].iloc[-1 - move_lookback]
+    net_move = last["close"] - ref_close
+    extreme_strength = abs(net_move) / atr_now
+    if extreme_strength < atr_mult_extreme:
+        return {"long": 0.0, "short": 0.0,
+                "note": f"no exhausted move yet ({extreme_strength:.1f}x ATR < {atr_mult_extreme:.1f}x required)"}
+    move_was_down = net_move < 0
+    move_was_up   = net_move > 0
+
+    # Gate 2: at a level — fresh N-bar extreme OR near a known swing point
+    recent = df.tail(sr_lookback)
+    fresh_low  = last["low"]  <= recent["low"].min()  + 1e-9
+    fresh_high = last["high"] >= recent["high"].max() - 1e-9
+    highs, lows = _swing_points(df, lookback=sr_lookback, order=3)
+    near_swing_low  = any(abs(last["low"]  - l[1]) <= atr_now * proximity_atr for l in lows[-5:])
+    near_swing_high = any(abs(last["high"] - h[1]) <= atr_now * proximity_atr for h in highs[-5:])
+    at_support    = fresh_low  or near_swing_low
+    at_resistance = fresh_high or near_swing_high
+
+    rng  = max(last["high"] - last["low"], 1e-6)
+    body = abs(last["close"] - last["open"])
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+    upper_wick = last["high"] - max(last["open"], last["close"])
+    prev_body_low  = min(prev["open"], prev["close"])
+    prev_body_high = max(prev["open"], prev["close"])
+    cur_bullish  = last["close"] > last["open"]
+    cur_bearish  = last["close"] < last["open"]
+    prev_bearish = prev["close"] < prev["open"]
+    prev_bullish = prev["close"] > prev["open"]
+
+    long_score = short_score = 0.0
+    note = f"exhausted move ({extreme_strength:.1f}x ATR) but no rejection candle yet at the level"
+
+    if move_was_down and at_support:
+        is_pin    = lower_wick >= rng * 0.5 and body <= rng * 0.4
+        is_engulf = (cur_bullish and prev_bearish
+                     and last["open"] <= prev_body_low and last["close"] >= prev_body_high)
+        if is_pin or is_engulf:
+            level_tag = "fresh climax low" if fresh_low else "key support level"
+            shape     = "bullish pin bar" if is_pin else "bullish engulfing"
+            quality   = (lower_wick / rng) if is_pin else (body / rng)
+            long_score = _clip(55 + extreme_strength * 6 + quality * 35)
+            note = f"{shape} after {extreme_strength:.1f}x-ATR exhausted sell-off at {level_tag}"
+
+    if move_was_up and at_resistance:
+        is_pin    = upper_wick >= rng * 0.5 and body <= rng * 0.4
+        is_engulf = (cur_bearish and prev_bullish
+                     and last["open"] >= prev_body_high and last["close"] <= prev_body_low)
+        if is_pin or is_engulf:
+            level_tag = "fresh climax high" if fresh_high else "key resistance level"
+            shape     = "bearish pin bar" if is_pin else "bearish engulfing"
+            quality   = (upper_wick / rng) if is_pin else (body / rng)
+            short_score = _clip(55 + extreme_strength * 6 + quality * 35)
+            note = f"{shape} after {extreme_strength:.1f}x-ATR exhausted rally at {level_tag}"
+
+    return {"long": long_score, "short": short_score, "note": note}
+
+
 # ----------------------------- registry + aggregation ---------------------------
 STRATEGY_REGISTRY = {
     "order_block": ("Order Block (ICT)", score_order_block),
@@ -1490,6 +1576,10 @@ STRATEGY_REGISTRY = {
     # Reads data["macro"]["myfxbook_sentiment"] — scores 0/0 gracefully until
     # Myfxbook credentials are configured in the UI. Weight kept below macro_bias.
     "myfxbook_sentiment": ("Myfxbook Retail Sentiment", score_myfxbook_sentiment),
+    # ---- 26th: extreme/exhausted directional move that slams into a fresh
+    # extreme or known S/R level and snaps back with a rejection candle.
+    # Needs only H1 OHLC + atr14 — no new data source required.
+    "climax_reversal_sr": ("Climax Reversal at S/R ★", score_climax_reversal_sr),
 }
 
 DEFAULT_VOTE_THRESHOLD = 50.0  # a strategy's score on a side must be >= this

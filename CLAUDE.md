@@ -79,18 +79,24 @@ panel (shows each group's bias + candidate even when nothing fires).
 5. Regenerate the dashboard (`python generate_dashboard.py`) if you want a
    fresh `dashboard.html` reflecting the very latest JSON state.
 
-## Strategies (25 total)
+## Strategies (26 total)
 
-24 price/order-flow/macro strategies plus a 25th: **Myfxbook Retail
+24 price/order-flow/macro strategies, a 25th: **Myfxbook Retail
 Sentiment** (`score_myfxbook_sentiment` in `strategies.py`, fetched by
-`fetch_myfxbook_sentiment()` in `macro_data.py`). Reads
-`data["macro"]["myfxbook_sentiment"]` — scores 0/0 gracefully until enabled
-with valid Myfxbook credentials in `strategy_config.json` under `"myfxbook"`
-(or the UI's "Myfxbook Sentiment" tab). Contrarian by default
-(`MYFXBOOK_CONTRARIAN`) — fades the crowd rather than following it.
-**Weight (0.8) is intentionally kept below `macro_bias`'s weight (1.2)** —
-retail sentiment from one broker is a secondary confirming vote, not a primary
-signal; do not raise it above macro_bias without the user explicitly approving.
+`fetch_myfxbook_sentiment()` in `macro_data.py`). Reads `data["macro"]
+["myfxbook_sentiment"]` — scores 0/0 gracefully until enabled with valid
+Myfxbook credentials in `strategy_config.json` under `"myfxbook"` (or the UI's
+"Myfxbook Sentiment" tab). Contrarian by default (`MYFXBOOK_CONTRARIAN`) —
+fades the crowd rather than following it. **Weight (0.8) kept below
+`macro_bias` (1.2)** — do not raise without user approval.
+
+And a 26th: **Climax Reversal at S/R** (`score_climax_reversal_sr` in
+`strategies.py`, key `climax_reversal_sr`, weight `1.0`). User-requested
+pattern: a strong/extreme directional move (net move over the last 8 H1
+bars >= 2.5x ATR14) that arrives at a fresh price extreme or a known swing
+S/R level, then prints a rejection candle (pin bar or engulfing) — votes
+the instant that reversal bar closes. Needs only H1 OHLC + atr14 (already
+present every scan), no new data wiring required.
 
 ## Hard rules (apply even when debugging)
 
