@@ -86,6 +86,7 @@ import league
 import strategy_simulator
 import telegram_alert
 import macro_data
+import symbol_normalize
 
 # ----------------------------- CONFIG ---------------------------------
 SYMBOL = "GOLD"                # broker symbol name for gold spot — XM uses "GOLD",
@@ -784,7 +785,7 @@ def send_startup_notification(info):
         "League system": LEAGUE_ENABLED,
         "Stop on error": f"{STOP_ON_ERROR} (max {MAX_ERRORS_BEFORE_STOP})",
     }
-    send_telegram(telegram_alert.format_startup_alert(summary, account_info=info))
+    send_telegram(telegram_alert.format_startup_alert(summary, account_info=info, symbol=SYMBOL))
 
 
 def _news_event_key(e):
@@ -837,7 +838,7 @@ def check_macro_update_notify():
     except Exception:
         logger.exception("score_macro_bias() failed during macro update notification.")
         return
-    send_telegram(telegram_alert.format_macro_update_alert(bias, macro))
+    send_telegram(telegram_alert.format_macro_update_alert(bias, macro, symbol=SYMBOL))
     _LAST_MACRO_NOTIFY_TS = now
 
 
@@ -959,7 +960,7 @@ def check_daily_status_notify():
         today_trades = count_today_new_trades()
     except Exception:
         today_trades = None
-    send_telegram(telegram_alert.format_daily_status_alert(info, open_count, today_pnl, today_trades))
+    send_telegram(telegram_alert.format_daily_status_alert(info, open_count, today_pnl, today_trades, symbol=SYMBOL))
     _LAST_DAILY_STATUS_DATE = today_str
 
 
@@ -1591,8 +1592,8 @@ def get_macro_snapshot_safe():
     unexpected error this returns None and score_macro_bias() treats that
     exactly like DOM-unsupported: a graceful 0/0, never an exception."""
     try:
-        metal = "GOLD" if SYMBOL.upper().startswith(("GOLD", "XAU")) else "SILVER"
-        mfb_symbol = "XAUUSD" if metal == "GOLD" else "XAGUSD"
+        metal = symbol_normalize.canonical_commodity(SYMBOL)
+        mfb_symbol = symbol_normalize.canonical_display(SYMBOL) if metal == "GOLD" else "XAGUSD"
         return macro_data.get_macro_snapshot(
             metal,
             myfxbook_email=(MYFXBOOK_EMAIL if MYFXBOOK_ENABLED else None),
@@ -1879,7 +1880,7 @@ def run_confluence_scan():
     # placed afterwards (AUTO_TRADE off, max concurrent trades, lot rounds
     # to 0, etc. can all still block the order below).
     if NOTIFY_SIGNAL:
-        send_telegram(telegram_alert.format_signal_alert(signal, contributing_str))
+        send_telegram(telegram_alert.format_signal_alert(signal, contributing_str, symbol=SYMBOL))
 
     lot = calc_lot_size(info.balance, RISK_PER_TRADE, signal["entry"], signal["sl"])
 
@@ -1933,7 +1934,7 @@ def run_confluence_scan():
 
     # (3) Order-open notification — fires once an order is confirmed placed.
     if NOTIFY_ORDER_OPEN:
-        msg = telegram_alert.format_order_alert(signal, lot, contributing_str, account_info=info)
+        msg = telegram_alert.format_order_alert(signal, lot, contributing_str, account_info=info, symbol=SYMBOL)
         send_telegram(msg)
 
 
@@ -2153,7 +2154,7 @@ def run_logic_groups_scan():
     contributing_str = f"{strat_key}={chosen['score']:.0f}% (League-prioritized)"
 
     if NOTIFY_SIGNAL:
-        send_telegram(telegram_alert.format_signal_alert(signal, contributing_str))
+        send_telegram(telegram_alert.format_signal_alert(signal, contributing_str, symbol=SYMBOL))
 
     lot = calc_lot_size(info.balance, RISK_PER_TRADE, signal["entry"], signal["sl"])
 
@@ -2203,7 +2204,7 @@ def run_logic_groups_scan():
         _save_json(ENTRY_META_PATH, entry_meta)
 
     if NOTIFY_ORDER_OPEN:
-        msg = telegram_alert.format_order_alert(signal, lot, contributing_str, account_info=info)
+        msg = telegram_alert.format_order_alert(signal, lot, contributing_str, account_info=info, symbol=SYMBOL)
         send_telegram(msg)
 
 
@@ -2264,7 +2265,7 @@ def update_league_from_closed_trades():
                         deal_info["duration"] = str(delta).split(".")[0]
                     except ValueError:
                         pass
-            msg = telegram_alert.format_close_alert(deal_info, account_info=info)
+            msg = telegram_alert.format_close_alert(deal_info, account_info=info, symbol=SYMBOL)
             send_telegram(msg)
 
         if meta is not None:
@@ -2566,7 +2567,7 @@ def run_once():
     # confluence path's signal alert, fired as soon as check_entry_signal()
     # returns a qualifying setup (before order placement is attempted).
     if NOTIFY_SIGNAL:
-        send_telegram(telegram_alert.format_signal_alert(signal))
+        send_telegram(telegram_alert.format_signal_alert(signal, symbol=SYMBOL))
 
     lot = calc_lot_size(info.balance, RISK_PER_TRADE, signal["entry"], signal["sl"])
 
@@ -2626,7 +2627,7 @@ def run_once():
             _save_json(ENTRY_META_PATH, entry_meta)
 
         if NOTIFY_ORDER_OPEN:
-            msg = telegram_alert.format_order_alert(signal, lot, strategy_name, account_info=info)
+            msg = telegram_alert.format_order_alert(signal, lot, strategy_name, account_info=info, symbol=SYMBOL)
             send_telegram(msg)
 
 

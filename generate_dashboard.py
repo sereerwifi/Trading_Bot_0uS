@@ -38,6 +38,7 @@ from datetime import datetime, date, timedelta
 import xauusd_mt5_strategy as ea
 import league
 import macro_data
+import symbol_normalize
 
 try:
     import MetaTrader5 as mt5
@@ -815,7 +816,7 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
 <body>
 <header>
   <div>
-    <h1>XAUUSD MT5 EA — Monitoring Dashboard <span class="symbol-tag">{esc(snap['symbol'])}</span></h1>
+    <h1>XAUUSD MT5 EA — Monitoring Dashboard <span class="symbol-tag">{esc(symbol_normalize.display_label(snap['symbol']))}</span></h1>
     <div class="sub">Generated {generated_at} &middot; ข้อมูล live จาก MT5 ขณะรันสคริปต์นี้ — รันใหม่เพื่ออัปเดต</div>
   </div>
 </header>

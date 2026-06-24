@@ -30,6 +30,7 @@ import webbrowser
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, messagebox
+import symbol_normalize
 
 BOT_VERSION = "9.0"
 
@@ -1233,8 +1234,13 @@ class App(tk.Tk):
         frame = ttk.LabelFrame(parent, text="Risk Management")
         frame.pack(fill="x", padx=12, pady=12)
         s = "risk"
-        self.reg_combo(frame, s, "symbol", "Symbol (เลือกหรือพิมพ์เองตามชื่อใน Market Watch ของโบรกเกอร์):",
-                       ["GOLD", "XAUUSD"], row=0, editable=True)
+        sym_var = self.reg_combo(frame, s, "symbol", "Symbol (เลือกหรือพิมพ์เองตามชื่อใน Market Watch ของโบรกเกอร์):",
+                                 ["GOLD", "XAUUSD"], row=0, editable=True)
+        sym_label = ttk.Label(frame, text=symbol_normalize.display_label(sym_var.get()), foreground="#4f8cff")
+        sym_label.grid(row=0, column=4, sticky="w", padx=8)
+        def _update_sym_label(*_):
+            sym_label.config(text=symbol_normalize.display_label(sym_var.get()))
+        sym_var.trace_add("write", _update_sym_label)
         self.reg_entry(frame, s, "risk_per_trade_pct", "Risk per trade (%):", row=1)
         self.reg_entry(frame, s, "lot_step", "Lot step:", row=2)
         self.reg_entry(frame, s, "value_per_point_per_lot", "Value per $1 move per lot ($):", row=3)

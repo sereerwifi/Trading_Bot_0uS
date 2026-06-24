@@ -25,6 +25,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import logging
+import symbol_normalize
 
 logger = logging.getLogger("xauusd_ea")
 
@@ -62,13 +63,14 @@ def send_message(bot_token, chat_id, text, enabled=True):
         return False
 
 
-def format_order_alert(signal, lot, scores_summary, account_info=None, league_note=None):
+def format_order_alert(signal, lot, scores_summary, account_info=None, league_note=None, symbol=None):
     """Builds a readable HTML message for a just-placed order, including the
     contributing strategies/scores and a couple of running stats."""
     direction = signal.get("direction", "?").upper()
     strategy = signal.get("strategy", "confluence13")
+    lbl = symbol_normalize.display_label(symbol or "XAUUSD")
     lines = [
-        f"<b>XAUUSD EA — New {direction} order</b>",
+        f"<b>{lbl} EA — New {direction} order</b>",
         f"Strategy: {strategy}",
         f"Entry: {signal.get('entry'):.2f} | SL: {signal.get('sl'):.2f} | TP2: {signal.get('tp2'):.2f}",
         f"Lot: {lot}",
@@ -82,12 +84,13 @@ def format_order_alert(signal, lot, scores_summary, account_info=None, league_no
     return "\n".join(lines)
 
 
-def format_close_alert(deal, account_info=None):
+def format_close_alert(deal, account_info=None, symbol=None):
     """Builds the position-closed message. `deal` accepts the legacy
     minimal {"pnl": ...} shape plus optional richer fields (direction,
     strategy, entry_price, close_price, lot, duration) when available."""
     pnl = deal.get("pnl")
-    lines = [f"<b>🔴 XAUUSD EA — Position Closed</b>"]
+    lbl = symbol_normalize.display_label(symbol or "XAUUSD")
+    lines = [f"<b>🔴 {lbl} EA — Position Closed</b>"]
     if deal.get("direction"):
         lines.append(f"Direction: {str(deal['direction']).upper()}")
     if deal.get("strategy"):
@@ -106,11 +109,12 @@ def format_close_alert(deal, account_info=None):
     return "\n".join(lines)
 
 
-def format_startup_alert(config_summary, account_info=None):
+def format_startup_alert(config_summary, account_info=None, symbol=None):
     """Builds the bot-startup message: start time + a flattened summary of
     the active strategy_config.json settings, built by the caller
     (xauusd_mt5_strategy.py's send_startup_notification())."""
-    lines = ["<b>🟢 XAUUSD EA — Bot Started</b>"]
+    lbl = symbol_normalize.display_label(symbol or "XAUUSD")
+    lines = [f"<b>🟢 {lbl} EA — Bot Started</b>"]
     start_time = config_summary.get("start_time")
     if start_time:
         lines.append(f"Start time: {start_time}")
@@ -124,15 +128,16 @@ def format_startup_alert(config_summary, account_info=None):
     return "\n".join(lines)
 
 
-def format_signal_alert(signal, scores_summary=None):
+def format_signal_alert(signal, scores_summary=None, symbol=None):
     """Builds a 'signal found' message — sent the moment a setup qualifies
     (passes confluence/R:R gates), BEFORE any order is actually sent. This is
     distinct from format_order_alert(), which only fires once an order is
     confirmed placed."""
     direction = signal.get("direction", "?").upper()
     strategy = signal.get("strategy", "confluence13")
+    lbl = symbol_normalize.display_label(symbol or "XAUUSD")
     lines = [
-        f"<b>🔎 XAUUSD EA — Signal Found ({direction})</b>",
+        f"<b>🔎 {lbl} EA — Signal Found ({direction})</b>",
         f"Strategy: {strategy}",
         f"Entry: {signal.get('entry'):.2f} | SL: {signal.get('sl'):.2f} | TP2: {signal.get('tp2'):.2f}",
     ]
@@ -145,12 +150,13 @@ def format_signal_alert(signal, scores_summary=None):
     return "\n".join(lines)
 
 
-def format_macro_update_alert(bias_result, macro_raw=None):
+def format_macro_update_alert(bias_result, macro_raw=None, symbol=None):
     """Builds the periodic Big Data / Macro update message — the weighted
     Gold Decision Matrix note from strategies.score_macro_bias() plus the
     raw figures behind it (forecast/changes), so the Bulls/Bears call is
     backed by visible numbers, not just a label."""
-    lines = ["<b>📊 XAUUSD EA — Big Data / Macro Update</b>",
+    lbl = symbol_normalize.display_label(symbol or "XAUUSD")
+    lines = [f"<b>📊 {lbl} EA — Big Data / Macro Update</b>",
               bias_result.get("note", "n/a")]
     if macro_raw:
         dxy = macro_raw.get("dxy")
@@ -203,9 +209,10 @@ def format_post_news_alert(event, impact_note=None):
     return "\n".join(lines)
 
 
-def format_daily_status_alert(account_info, open_positions_count, today_pnl=None, today_trades=None):
+def format_daily_status_alert(account_info, open_positions_count, today_pnl=None, today_trades=None, symbol=None):
     """Builds the once-daily (default 08:00) bot-status heartbeat message."""
-    lines = ["<b>📋 XAUUSD EA — Daily Status</b>"]
+    lbl = symbol_normalize.display_label(symbol or "XAUUSD")
+    lines = [f"<b>📋 {lbl} EA — Daily Status</b>"]
     if account_info is not None:
         lines.append(f"Balance: {account_info.balance:.2f} {account_info.currency} | "
                       f"Equity: {account_info.equity:.2f}")

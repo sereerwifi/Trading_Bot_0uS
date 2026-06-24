@@ -80,6 +80,13 @@ that function's docstring for setup; it's fully optional and never required
 for the bot to run.
 """
 
+# NOTE: symbol_metal / myfxbook_symbol should always be derived from the
+# broker's configured SYMBOL via symbol_normalize.canonical_commodity() /
+# canonical_display() (see xauusd_mt5_strategy.py) -- never hardcode
+# "GOLD" or "XAUUSD" again in a new caller. This keeps every alias
+# ("GOLD", "XAUUSD", "XAUUSDm", "GOLD#", ...) resolving to the same
+# instrument everywhere in the bot.
+
 import json
 import logging
 import os
