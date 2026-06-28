@@ -4,7 +4,7 @@
 # read/monitor/debug the XAUUSD MT5 EA running in this folder.
 #
 # Run from PowerShell (no Administrator needed):
-#   cd "C:\Users\Administrator\Desktop\RoBotTrading man 0 USV9"
+#   cd "C:\Users\Administrator\Desktop\RoBotTrading man 0 V10"
 #   powershell -ExecutionPolicy Bypass -File install_claude_code.ps1
 #
 # What it does:
@@ -90,7 +90,7 @@ try {
 Write-Step "Setup script finished. Next steps (manual, one time):"
 Write-Host ""
 Write-Host "  1. cd into the bot folder. Example (adjust the path to match this VPS):" -ForegroundColor White
-$botFolderHint = "C:\Users\Administrator\Desktop\RoBotTrading man 0 USV9"
+$botFolderHint = "C:\Users\Administrator\Desktop\RoBotTrading man 0 V10"
 Write-Host "       cd " -NoNewline -ForegroundColor White
 Write-Host $botFolderHint -ForegroundColor Gray
 Write-Host ""
