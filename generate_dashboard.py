@@ -487,7 +487,7 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
     else:
         cal_rows = "<tr><td colspan='8' class='empty'>ยังไม่มีข้อมูล economic calendar (macro_data.py) — ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต/ไฟร์วอลล์</td></tr>"
 
-    # ---- confluence multi-strategy (26) scores ----
+    # ---- confluence multi-strategy (31) scores ----
     if conf_snap:
         direction_taken = conf_snap.get("direction_taken")
         conf_cards = f"""
@@ -610,7 +610,24 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
             bull_score_line = (f'<div class="msg" style="margin-top:4px;font-size:13px">'
                                 f'<b>{esc(macro_strategy.get("note", "-"))}</b></div>')
 
-        macro_note = (bull_score_line +
+        # Proxy staleness badges — only shown when a data key is on a fallback
+        proxy_badges = ""
+        try:
+            proxy_report = macro_data.get_proxy_staleness_report()
+            for entry in proxy_report:
+                if entry["hours"] < 1.0:
+                    continue  # suppress until at least 1h on proxy (avoids startup flash)
+                proxy_badges += (
+                    f'<div style="margin-top:6px;padding:5px 8px;border-radius:4px;'
+                    f'background:rgba(255,170,0,.12);color:#ffaa00;font-size:12.5px">'
+                    f'⚠ macro_bias: <b>{esc(entry["data_key"])}</b> on proxy data '
+                    f'(<code>{esc(entry["proxy_source"])}</code>) '
+                    f'for {entry["hours"]:.0f}h — primary feed blocked</div>'
+                )
+        except Exception:
+            proxy_badges = ""
+
+        macro_note = (bull_score_line + proxy_badges +
                       '<div class="msg" style="margin-top:8px;font-size:12.5px;color:var(--text-dim)">'
                       'ข้อมูลนี้อัปเดตไม่บ่อยเท่ากลยุทธ์ราคา (COT รายสัปดาห์ / ที่เหลือทุก 3-6 ชม.) — ดู macro_data.py. '
                       'ETF Flow มักไม่มีข้อมูลเพราะเว็บต้นทาง (SPDR/iShares) มีระบบกันบอท ถือเป็นข้อจำกัดที่ทราบอยู่แล้ว ไม่ใช่ bug. '
@@ -850,7 +867,7 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
 </section>
 
 <section>
-  <h2>Multi-Strategy Confluence (26) — Live Scores</h2>
+  <h2>Multi-Strategy Confluence (31) — Live Scores</h2>
   <div class="grid-cards">{conf_cards}</div>
   <div class="panel-table" style="margin-top:14px">
     <table>

@@ -132,9 +132,20 @@ ENFORCE_MIN_LOT = True         # if the risk-based calc rounds below MIN_LOT:
                                 #            higher than RISK_PER_TRADE for that trade)
                                 #   False -> skip the trade entirely (lot = 0)
 MAX_DAILY_TRADES = 5           # max new entries per calendar day; None = unlimited
-MIN_TRADE_INTERVAL_MINUTES = 20  # minimum minutes between consecutive new orders; 0 = no limit
+MIN_TRADE_INTERVAL_MINUTES = 20          # minimum minutes between consecutive new orders (Day Trade / confluence13)
+MIN_TRADE_INTERVAL_MINUTES_SCALPING = 5  # separate, shorter cooldown for Scalping Trade group only;
+                                          # defaults to 5 min but is independent of the Day Trade cooldown
+                                          # so a scalping fill no longer blocks day-trade entries and vice versa.
+                                          # Change via risk.min_trade_interval_minutes_scalping in config/UI.
 
-_LAST_ORDER_TIME: "datetime | None" = None  # tracks when the most recent order was placed
+# Per-group last-order time so Day Trade and Scalping Trade cooldowns don't
+# cross-block each other. Keys match _group_key() return values below.
+_LAST_ORDER_TIME_BY_GROUP: "dict[str, datetime | None]" = {
+    "confluence13": None,
+    "day_trade":    None,
+    "scalping_trade": None,
+    "legacy":       None,
+}
 MAX_DRAWDOWN_PCT = 10.0        # stop opening NEW trades once equity drawdown from the
                                 # session's peak balance reaches this %; None = disabled.
                                 # Existing open positions keep being trailing-managed.
@@ -239,9 +250,9 @@ BASKET_MAX_LOSS_PCT = None        # e.g. 1.5  -> close all when loss >= 1.5% of 
 # are recorded here for future implementation.
 ENABLED_STRATEGIES = {"fib_confluence"}
 
-# --- Multi-Strategy (20) Confluence Engine -----------------------------------
+# --- Multi-Strategy (31) Confluence Engine -----------------------------------
 # ENTRY_MODE selects which entry logic the main loop runs:
-#   "confluence13" (default, recommended) -> run_confluence_scan(): all 13
+#   "confluence13" (default, recommended) -> run_confluence_scan(): all 31
 #       strategies in strategies.py score the market every SCAN_INTERVAL_SECONDS,
 #       and an entry only fires when MULTIPLE strategies agree (confluence) —
 #       see MIN_STRATEGY_SCORE / MIN_AGREEING_STRATEGIES below.
@@ -285,7 +296,7 @@ LOGIC_GROUPS_APPLY_DAILY_FILTER = False
 # scan and takes no trade in either direction (mirrors the existing Daily
 # Filter's "neutral blocks both sides" design, but using H1 signals instead
 # of the D1 EMA stack).
-DAY_TRADE_BIAS_PRIORITY = ["macro_bias", "multi_tf_align", "news_fade", "order_flow_dom", "supply_demand"]
+DAY_TRADE_BIAS_PRIORITY = ["multi_tf_align", "macro_bias", "news_fade", "order_flow_dom", "supply_demand"]
 # Step 2 (entry pool): once the group has a bias, these are the strategies
 # allowed to actually trigger an entry in that direction. If more than one
 # fires the same scan, the League System's standing (auto_weight, then
@@ -293,8 +304,9 @@ DAY_TRADE_BIAS_PRIORITY = ["macro_bias", "multi_tf_align", "news_fade", "order_f
 DAY_TRADE_STRATEGIES = [
     "bb_breakout", "macd_cross", "opening_range_breakout", "price_action",
     "vwap_rejection", "rsi_divergence", "atr_donchian_breakout", "fair_value_gap",
-    "fibonacci", "multi_tf_align", "news_fade", "scalp_ema_pullback",
+    "fibonacci", "multi_tf_align", "news_fade",
     "ema_cross", "liquidity_sweep", "bos_choch", "order_block",
+    "climax_reversal_sr", "zone_mw_reversal", "mtr_trend_regime", "mtr_range_regime",
 ]
 
 # Group 2: "Scalping Trade" — same two-step design, smaller/faster bias
@@ -303,6 +315,7 @@ SCALP_BIAS_PRIORITY = ["macro_bias", "order_flow_dom", "supply_demand", "sr_brea
 SCALP_STRATEGIES = [
     "scalp_ema_pullback", "london_breakout", "scalp_combo_sweep",
     "scalp_ny_orb", "scalp_london_sweep",
+    "smart_money_sweep_morning", "smart_money_sweep_night",
 ]
 TF_M15 = mt5.TIMEFRAME_M15
 TF_M5 = mt5.TIMEFRAME_M5        # used by the 4 scalping strategies (#21-24)
@@ -325,7 +338,7 @@ MIN_AGREEING_STRATEGIES = 3
 # Recommended defaults: 1.2-1.4 for high-conviction structural/SMC concepts
 # and the institutional Big Data check, 1.0-1.1 for solid dependable
 # classics, 0.7-0.9 for useful-but-lag/false-signal-prone confirmation —
-# nothing is disabled, only down-weighted, so all 24 strategies still vote.
+# nothing is disabled, only down-weighted, so all 31 strategies still vote.
 _RECOMMENDED_STRATEGY_WEIGHTS = {
     "order_block": 1.3, "supply_demand": 1.1, "ema_cross": 0.8, "rsi_divergence": 0.8,
     "london_breakout": 1.1, "fibonacci": 0.8, "vwap_rejection": 1.0, "news_fade": 0.7,
@@ -338,9 +351,14 @@ _RECOMMENDED_STRATEGY_WEIGHTS = {
     "scalp_combo_sweep": 1.4,  # the user's "most recommended" 4-layer combo setup
     "myfxbook_sentiment": 0.8,  # must stay below macro_bias's 1.2 (Big Data) per user's rule
     "climax_reversal_sr": 1.0,  # 26th -- extreme/exhausted move + S/R + rejection candle
+    "zone_mw_reversal": 1.1,  # 29th -- multi-touch H4 zone + M15 double top/bottom + neckline break
+    "smart_money_sweep_morning": 1.0,  # 30th -- M1 sweep+reclaim / DOM delta / spike-wick, Asia 07-10 BKK
+    "smart_money_sweep_night": 1.0,  # 31st -- same logic, US-close window 02-04 BKK
+    "mtr_range_regime": 0.9,  # 27th -- MTR quantitative range-regime detector
+    "mtr_trend_regime": 0.8,  # 28th -- MTR quantitative trend-regime detector
 }
 STRATEGY_WEIGHTS = {k: _RECOMMENDED_STRATEGY_WEIGHTS.get(k, 1.0) for k in strategies.STRATEGY_REGISTRY}
-# Which of the (now 24) confluence strategies are turned on at all (a disabled strategy is
+# Which of the (now 31) confluence strategies are turned on at all (a disabled strategy is
 # excluded entirely — not scored, not displayed as voting).
 CONFLUENCE_ENABLED_STRATEGIES = set(strategies.STRATEGY_REGISTRY.keys())
 # Generic SL/TP construction for a confluence-triggered entry (it isn't tied
@@ -374,6 +392,16 @@ LEAGUE_BENCH_HOURS = 24
 SHADOW_SIMULATION_ENABLED = True
 LEAGUE_MIN_SAMPLES_FOR_ADJUSTMENT = 5  # don't judge a strategy on too little data yet
 LEAGUE_AUTO_DISABLE_WEIGHT_FLOOR = 0.05  # auto_weight at/below this -> treat as fully benched
+
+# --- Order SL/TP options ------------------------------------------------------
+# Defaults reproduce current behavior exactly — nothing changes until the user
+# opens the UI "Order Options" panel and explicitly saves a different value.
+ORDER_OPTIONS = {
+    "use_sl":       True,       # False = send sl=0.0 (NO SL AT BROKER — unlimited risk)
+    "use_tp":       True,       # False = send tp=0.0 (no TP, let trailing/basket manage exit)
+    "tp_mode":      "strategy", # "strategy" = ATR/R:R TP as now; "fixed_usd" = calc from target $
+    "tp_fixed_usd": 50.0,       # USD profit target per order (only used when tp_mode=fixed_usd)
+}
 
 # --- Breakeven SL ------------------------------------------------------------
 # Once a position's floating profit reaches BREAKEVEN_TRIGGER_R multiples of
@@ -432,7 +460,9 @@ NOTIFY_MACRO_UPDATE = True
 NOTIFY_PRE_NEWS = True
 NOTIFY_POST_NEWS = True
 NOTIFY_DAILY_STATUS = True
-MACRO_UPDATE_INTERVAL_HOURS = 6.0   # how often to push the Big Data summary
+MACRO_UPDATE_INTERVAL_HOURS = 6.0        # how often to push the Big Data summary
+PROXY_STALENESS_ALERT_ENABLED = True     # Telegram alert when macro data on proxy > threshold
+PROXY_STALENESS_ALERT_HOURS   = 24.0    # hours on proxy before first alert fires
 DAILY_STATUS_HOUR = 8               # local-time hour for the daily heartbeat
 PRE_NEWS_MINUTES = 60                # how far ahead to warn before a release
 POST_NEWS_WINDOW_MINUTES = 30        # how long after a release to keep trying
@@ -518,7 +548,7 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     overrides the matching module-level globals. Safe no-op if the file
     doesn't exist or a field is missing — defaults above are kept."""
     global SYMBOL, RISK_PER_TRADE, LOT_STEP, VALUE_PER_POINT_PER_LOT, MAX_CONCURRENT_TRADES, AUTO_TRADE
-    global MIN_TRADE_INTERVAL_MINUTES
+    global MIN_TRADE_INTERVAL_MINUTES, MIN_TRADE_INTERVAL_MINUTES_SCALPING
     global TRAILING_ENABLED, TRAILING_METHOD, TRAILING_ATR_MULT, TRAILING_FIXED_POINTS
     global TRAILING_PERCENT, TRAILING_EMA_PERIOD, TRAILING_EMA_BUFFER_POINTS
     global TRAILING_ACTIVATION_R, TRAILING_REMOVE_TP_ON_ACTIVATE, TRAILING_CHECK_SECONDS
@@ -537,6 +567,7 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     global LEAGUE_ENABLED, LEAGUE_MAX_CONSECUTIVE_LOSSES, LEAGUE_MIN_WINRATE_PCT
     global LEAGUE_WINRATE_LOOKBACK_TRADES, LEAGUE_BENCH_HOURS
     global SHADOW_SIMULATION_ENABLED, LEAGUE_MIN_SAMPLES_FOR_ADJUSTMENT
+    global ORDER_OPTIONS
     global BREAKEVEN_ENABLED, BREAKEVEN_TRIGGER_R, BREAKEVEN_BUFFER_POINTS
     global TELEGRAM_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     global MYFXBOOK_ENABLED, MYFXBOOK_EMAIL, MYFXBOOK_PASSWORD, MYFXBOOK_CONTRARIAN
@@ -544,6 +575,7 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     global NOTIFY_STARTUP, NOTIFY_SIGNAL, NOTIFY_ORDER_OPEN, NOTIFY_ORDER_CLOSE
     global NOTIFY_MACRO_UPDATE, NOTIFY_PRE_NEWS, NOTIFY_POST_NEWS, NOTIFY_DAILY_STATUS
     global MACRO_UPDATE_INTERVAL_HOURS, DAILY_STATUS_HOUR, PRE_NEWS_MINUTES, POST_NEWS_WINDOW_MINUTES
+    global PROXY_STALENESS_ALERT_ENABLED, PROXY_STALENESS_ALERT_HOURS
     global _CONFIG_LOADED_ONCE
 
     if not os.path.exists(path):
@@ -572,6 +604,7 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     VALUE_PER_POINT_PER_LOT = float(risk.get("value_per_point_per_lot", VALUE_PER_POINT_PER_LOT))
     MAX_CONCURRENT_TRADES = int(risk.get("max_concurrent_trades", MAX_CONCURRENT_TRADES))
     MIN_TRADE_INTERVAL_MINUTES = float(risk.get("min_trade_interval_minutes", MIN_TRADE_INTERVAL_MINUTES))
+    MIN_TRADE_INTERVAL_MINUTES_SCALPING = float(risk.get("min_trade_interval_minutes_scalping", MIN_TRADE_INTERVAL_MINUTES_SCALPING))
     AUTO_TRADE = bool(risk.get("auto_trade", AUTO_TRADE))
 
     mm = cfg.get("money_management", {})
@@ -601,12 +634,16 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     TRAILING_REMOVE_TP_ON_ACTIVATE = bool(t.get("remove_tp_on_activate", TRAILING_REMOVE_TP_ON_ACTIVATE))
     TRAILING_CHECK_SECONDS = int(t.get("check_seconds", TRAILING_CHECK_SECONDS))
 
+    def _flt(v):
+        try: return float(v) if v not in (None, "", "None") else None
+        except (ValueError, TypeError): return None
+
     b = cfg.get("basket_close", {})
     BASKET_CLOSE_ENABLED = bool(b.get("enabled", BASKET_CLOSE_ENABLED))
-    BASKET_TARGET_PROFIT_USD = b.get("target_profit_usd") or None
-    BASKET_MAX_LOSS_USD = b.get("max_loss_usd") or None
-    BASKET_TARGET_PROFIT_PCT = b.get("target_profit_pct") or None
-    BASKET_MAX_LOSS_PCT = b.get("max_loss_pct") or None
+    BASKET_TARGET_PROFIT_USD = _flt(b.get("target_profit_usd"))
+    BASKET_MAX_LOSS_USD      = _flt(b.get("max_loss_usd"))
+    BASKET_TARGET_PROFIT_PCT = _flt(b.get("target_profit_pct"))
+    BASKET_MAX_LOSS_PCT      = _flt(b.get("max_loss_pct"))
 
     th = cfg.get("trading_hours", {})
     TRADING_HOURS_FILTER_ENABLED = bool(th.get("enabled", TRADING_HOURS_FILTER_ENABLED))
@@ -637,10 +674,6 @@ def load_ui_config(path=CONFIG_JSON_PATH):
 
     legacy_strategies_cfg = cfg.get("strategies", {})
     ENABLED_STRATEGIES = {k for k, v in legacy_strategies_cfg.items() if v.get("enabled")}
-    if "fib_confluence" not in ENABLED_STRATEGIES:
-        logger.warning("Note: fib_confluence disabled in config — check_entry_signal() "
-              "only implements that logic today, so no entries will fire until "
-              "the other selected strategies are coded in.")
 
     conf = cfg.get("confluence", {})
     ENTRY_MODE = conf.get("entry_mode", ENTRY_MODE)
@@ -672,6 +705,12 @@ def load_ui_config(path=CONFIG_JSON_PATH):
         lg_cfg.get("min_samples_for_adjustment", LEAGUE_MIN_SAMPLES_FOR_ADJUSTMENT)
     )
 
+    oo = cfg.get("order_options", {})
+    ORDER_OPTIONS["use_sl"]       = bool(oo.get("use_sl",       ORDER_OPTIONS["use_sl"]))
+    ORDER_OPTIONS["use_tp"]       = bool(oo.get("use_tp",       ORDER_OPTIONS["use_tp"]))
+    ORDER_OPTIONS["tp_mode"]      = oo.get("tp_mode",           ORDER_OPTIONS["tp_mode"])
+    ORDER_OPTIONS["tp_fixed_usd"] = float(oo.get("tp_fixed_usd", ORDER_OPTIONS["tp_fixed_usd"]))
+
     be_cfg = cfg.get("breakeven", {})
     BREAKEVEN_ENABLED = bool(be_cfg.get("enabled", BREAKEVEN_ENABLED))
     BREAKEVEN_TRIGGER_R = float(be_cfg.get("trigger_r", BREAKEVEN_TRIGGER_R))
@@ -702,11 +741,15 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     NOTIFY_POST_NEWS = bool(notif.get("post_news", NOTIFY_POST_NEWS))
     NOTIFY_DAILY_STATUS = bool(notif.get("daily_status", NOTIFY_DAILY_STATUS))
     MACRO_UPDATE_INTERVAL_HOURS = float(notif.get("macro_update_interval_hours", MACRO_UPDATE_INTERVAL_HOURS))
+
+    md_cfg = cfg.get("macro_data", {})
+    PROXY_STALENESS_ALERT_ENABLED = bool(md_cfg.get("proxy_staleness_alert_enabled", PROXY_STALENESS_ALERT_ENABLED))
+    PROXY_STALENESS_ALERT_HOURS   = float(md_cfg.get("proxy_staleness_alert_hours", PROXY_STALENESS_ALERT_HOURS))
     DAILY_STATUS_HOUR = int(notif.get("daily_status_hour", DAILY_STATUS_HOUR))
     PRE_NEWS_MINUTES = int(notif.get("pre_news_minutes", PRE_NEWS_MINUTES))
     POST_NEWS_WINDOW_MINUTES = int(notif.get("post_news_window_minutes", POST_NEWS_WINDOW_MINUTES))
 
-    logger.info(f"Loaded config from {path}. Enabled strategies: {sorted(ENABLED_STRATEGIES)}")
+    logger.info(f"Loaded config from {path}. Enabled strategies: {sorted(CONFLUENCE_ENABLED_STRATEGIES)}")
     logger.info(f"Entry mode: {ENTRY_MODE}"
                 + (f" (logic_group_selection={LOGIC_GROUP_SELECTION})" if ENTRY_MODE == "logic_groups" else "")
                 + f" | Confluence: min_score={MIN_STRATEGY_SCORE} "
@@ -861,6 +904,40 @@ def check_macro_update_notify():
         return
     send_telegram(telegram_alert.format_macro_update_alert(bias, macro, symbol=SYMBOL))
     _LAST_MACRO_NOTIFY_TS = now
+
+
+_LAST_PROXY_ALERT_SENT: "dict[str, str]" = {}  # data_key -> "since" ISO str of the episode already alerted
+
+
+def check_proxy_staleness_notify():
+    """Fires a one-time Telegram alert per data key when macro data has been
+    on a proxy/fallback source for >= PROXY_STALENESS_ALERT_HOURS. Resets
+    when that key recovers to a primary source so a future episode can alert
+    again. Follows the same one-per-transition pattern as check_macro_update_notify()."""
+    if not (TELEGRAM_ENABLED and PROXY_STALENESS_ALERT_ENABLED):
+        return
+    try:
+        report = macro_data.get_proxy_staleness_report()
+    except Exception:
+        return
+    current_keys = set()
+    for entry in report:
+        key = entry["data_key"]
+        current_keys.add(key)
+        if entry["hours"] < PROXY_STALENESS_ALERT_HOURS:
+            continue
+        if _LAST_PROXY_ALERT_SENT.get(key) == entry["since"]:
+            continue  # already alerted for this episode
+        try:
+            send_telegram(telegram_alert.format_proxy_staleness_alert(
+                key, entry["hours"], entry["proxy_source"], symbol=SYMBOL))
+            _LAST_PROXY_ALERT_SENT[key] = entry["since"]
+        except Exception:
+            logger.exception(f"Failed to send proxy staleness alert for {key}.")
+    # Clear sent-alert record for any key that recovered to primary
+    for key in list(_LAST_PROXY_ALERT_SENT):
+        if key not in current_keys:
+            del _LAST_PROXY_ALERT_SENT[key]
 
 
 def check_pre_news_notify():
@@ -1273,6 +1350,17 @@ def passes_risk_reward(signal, min_rr=None):
     return (reward / risk) >= min_rr
 
 
+def calc_tp_price_from_usd(entry, direction, lot, target_usd,
+                           value_per_point=VALUE_PER_POINT_PER_LOT):
+    """Price level that yields target_usd profit for lot lots, given the
+    account's $/point/lot conversion. Returns None if lot or value_per_point
+    is 0 (caller falls back to strategy TP)."""
+    if lot <= 0 or value_per_point <= 0:
+        return None
+    distance = target_usd / (lot * value_per_point)
+    return entry + distance if direction == "long" else entry - distance
+
+
 def calc_lot_size(balance, risk_pct, entry, sl, value_per_point=VALUE_PER_POINT_PER_LOT,
                    lot_step=LOT_STEP, min_lot=MIN_LOT, max_lot=MAX_LOT):
     """Risk-based lot size, then clamped to [min_lot, max_lot]. Returns 0.0 if
@@ -1520,7 +1608,46 @@ def is_within_trading_hours(now=None):
     return False, None
 
 
+# Signal-alert de-duplication: prevents the same pending setup from sending
+# ~17 identical Telegram messages across repeated scans. Matches the
+# one-time-per-transition pattern used by check_market_hours_and_notify() etc.
+# Fingerprint = (strategy_key, direction, round(entry,1)). Re-alerts after
+# _SIGNAL_ALERT_RENOTIFY_SECS even if the same setup is still pending (so a
+# long-lived signal isn't silently dropped for hours).
+_SIGNAL_ALERT_RENOTIFY_SECS = 3600   # re-alert every 1h if signal persists unfilled
+_LAST_SIGNAL_ALERT_KEY: "dict[str, tuple | None]" = {
+    "confluence13": None, "day_trade": None, "scalping_trade": None, "legacy": None,
+}
+_LAST_SIGNAL_ALERT_TS: "dict[str, float]" = {
+    "confluence13": 0.0, "day_trade": 0.0, "scalping_trade": 0.0, "legacy": 0.0,
+}
+
+
+def _should_send_signal_alert(group, signal):
+    """Returns True (and updates the cache) only if this signal is genuinely
+    new for this group, OR the same signal has been pending for > 1h."""
+    key = _group_key(group)
+    strategy = signal.get("strategy", "")
+    direction = signal.get("direction", "")
+    entry = round(float(signal.get("entry") or 0), 1)
+    fingerprint = (strategy, direction, entry)
+    now = time.time()
+    if (fingerprint != _LAST_SIGNAL_ALERT_KEY.get(key)
+            or (now - _LAST_SIGNAL_ALERT_TS.get(key, 0)) >= _SIGNAL_ALERT_RENOTIFY_SECS):
+        _LAST_SIGNAL_ALERT_KEY[key] = fingerprint
+        _LAST_SIGNAL_ALERT_TS[key] = now
+        return True
+    return False
+
+
 _LAST_MARKET_OPEN_STATE = None  # None = unknown yet; True/False after first check
+# Timezone-independent tick freshness tracking: store the broker's tick
+# timestamp and the LOCAL machine time when we first saw it. MT5 tick .time
+# uses broker server time (e.g. UTC+3 for XM), not local machine time, so
+# comparing tick.time directly against time.time() gives a wrong offset.
+# Instead, we track when a NEW tick arrives by local clock — no offset needed.
+_last_seen_tick_broker_ts = None   # tick.time value of the last seen tick
+_last_new_tick_local_ts   = None   # time.time() when that tick first appeared
 
 
 def is_market_open(max_tick_age_sec=None):
@@ -1532,9 +1659,10 @@ def is_market_open(max_tick_age_sec=None):
     Two independent checks — either one can mark the market closed:
       1. mt5.symbol_info(SYMBOL).trade_mode = SYMBOL_TRADE_MODE_DISABLED
          (broker's own flag for holidays/maintenance).
-      2. Tick freshness — last tick older than max_tick_age_sec means the
-         feed is stale or the market is genuinely closed (no ticks arrive
-         during weekend gaps even when MT5 stays "connected")."""
+      2. Tick freshness — measured by how long it has been since a NEW tick
+         arrived, using the local machine clock (avoids the broker timezone
+         offset that makes tick.time and time.time() disagree by ~hours)."""
+    global _last_seen_tick_broker_ts, _last_new_tick_local_ts
     if not MARKET_HOURS_CHECK_ENABLED:
         return True, "market-hours check disabled"
     max_age = max_tick_age_sec if max_tick_age_sec is not None else MARKET_CLOSED_MAX_TICK_AGE_SEC
@@ -1546,11 +1674,17 @@ def is_market_open(max_tick_age_sec=None):
     tick = mt5.symbol_info_tick(SYMBOL)
     if tick is None or not tick.time:
         return False, f"no tick data for {SYMBOL} -- feed disconnected or market closed"
-    tick_age = time.time() - tick.time
+    now_local = time.time()
+    if tick.time != _last_seen_tick_broker_ts:
+        _last_seen_tick_broker_ts = tick.time
+        _last_new_tick_local_ts   = now_local
+    if _last_new_tick_local_ts is None:
+        _last_new_tick_local_ts = now_local
+    tick_age = now_local - _last_new_tick_local_ts
     if tick_age > max_age:
-        return False, (f"last tick for {SYMBOL} is {tick_age:.0f}s old "
-                       f"(> {max_age}s threshold) -- feed stale or market closed")
-    return True, f"market open (last tick {tick_age:.0f}s ago)"
+        return False, (f"no new ticks for {tick_age:.0f}s "
+                       f"(> {max_age}s threshold) -- market closed or feed stale")
+    return True, f"market open (last new tick {tick_age:.0f}s ago)"
 
 
 def check_market_hours_and_notify():
@@ -1625,21 +1759,34 @@ def check_consecutive_loss_breaker():
     return False, None
 
 
-def check_trade_interval():
-    """Enforces a minimum time gap between consecutive new orders (returns
-    (blocked, reason)). Prevents the bot from stacking many trades in rapid
-    succession by requiring at least MIN_TRADE_INTERVAL_MINUTES minutes to
-    elapse since the last successful order. Disabled when
-    MIN_TRADE_INTERVAL_MINUTES <= 0."""
-    global _LAST_ORDER_TIME
-    if MIN_TRADE_INTERVAL_MINUTES <= 0 or _LAST_ORDER_TIME is None:
+def _group_key(group_label):
+    """Normalises a group label to the key used in per-group dicts.
+    'Day Trade' -> 'day_trade', 'Scalping Trade' -> 'scalping_trade', etc."""
+    return group_label.lower().replace(" ", "_")
+
+
+def check_trade_interval(group="confluence13"):
+    """Enforces a per-group minimum time gap between consecutive new orders.
+    Day Trade and Scalping Trade have independent cooldowns so a scalping fill
+    no longer blocks day-trade entries and vice versa.
+    Returns (blocked: bool, reason: str | None)."""
+    key = _group_key(group)
+    interval = (MIN_TRADE_INTERVAL_MINUTES_SCALPING
+                if key == "scalping_trade" else MIN_TRADE_INTERVAL_MINUTES)
+    last_time = _LAST_ORDER_TIME_BY_GROUP.get(key)
+    if interval <= 0 or last_time is None:
         return False, None
-    elapsed = (datetime.now() - _LAST_ORDER_TIME).total_seconds() / 60.0
-    if elapsed < MIN_TRADE_INTERVAL_MINUTES:
-        remaining = MIN_TRADE_INTERVAL_MINUTES - elapsed
-        return True, (f"trade interval: {elapsed:.1f}min since last order "
-                      f"(min {MIN_TRADE_INTERVAL_MINUTES:.0f}min) — wait {remaining:.1f}min more")
+    elapsed = (datetime.now() - last_time).total_seconds() / 60.0
+    if elapsed < interval:
+        remaining = interval - elapsed
+        return True, (f"trade interval: {elapsed:.1f}min since last {group} order "
+                      f"(min {interval:.0f}min) — wait {remaining:.1f}min more")
     return False, None
+
+
+def _record_order_time(group="confluence13"):
+    """Records the time of a just-placed order for the given group's cooldown."""
+    _LAST_ORDER_TIME_BY_GROUP[_group_key(group)] = datetime.now()
 
 
 # ----------------------------- CONFLUENCE MULTI-STRATEGY ENGINE (20 strategies) ----------------
@@ -1715,6 +1862,30 @@ def get_macro_snapshot_safe():
     except Exception:
         logger.exception("macro_data.get_macro_snapshot() failed — macro_bias strategy will score 0/0 this scan.")
         return None
+
+
+def _mtr_is_danger(data):
+    """MTR-inspired danger gate: blocks new entries when H1 ATR is spiking
+    (> 1.5× 50-bar baseline). Runs from already-fetched market data so there
+    is no extra MT5 call. Returns (danger: bool, reason: str)."""
+    try:
+        import pandas as pd
+        h1 = data.get("h1")
+        if h1 is None or len(h1) < 55:
+            return False, ""
+        atr_now = float(h1["atr14"].iloc[-1])
+        atr_vals = h1["atr14"].dropna()
+        if len(atr_vals) < 52:
+            return False, ""
+        atr_baseline = float(atr_vals.iloc[-51:-1].mean())
+        if atr_baseline <= 0:
+            return False, ""
+        shock = atr_now / atr_baseline
+        if shock > 1.5:
+            return True, f"MTR danger: ATR {shock:.2f}x baseline — volatility spike, skipping new entries"
+        return False, ""
+    except Exception:
+        return False, ""
 
 
 def build_market_data():
@@ -1801,7 +1972,7 @@ def save_scores_snapshot(scan_result, direction_taken=None, macro=None, logic_gr
 
 
 def run_confluence_scan():
-    """Multi-strategy (24) parallel scan: every strategy in strategies.py scores the
+    """Multi-strategy (31) parallel scan: every strategy in strategies.py scores the
     market 0-100 for long/short; an entry only fires when MULTIPLE
     non-benched strategies agree (confluence), per the locked-in design:
     MIN_AGREEING_STRATEGIES of them must vote the same side AND the
@@ -1907,6 +2078,11 @@ def run_confluence_scan():
 
     # ---- gates below block ACTING on the signal (order execution), not the
     # scoring/snapshot above, which already ran ----
+    danger, danger_reason = _mtr_is_danger(data)
+    if danger:
+        logger.debug(f"Confluence scan: {danger_reason}")
+        return
+
     in_session, matched = is_within_trading_hours()
     if not in_session:
         logger.debug("Confluence scan: outside selected trading session(s) — no new entries.")
@@ -1991,7 +2167,7 @@ def run_confluence_scan():
     # confluence + R:R gates, independent of whether an order actually gets
     # placed afterwards (AUTO_TRADE off, max concurrent trades, lot rounds
     # to 0, etc. can all still block the order below).
-    if NOTIFY_SIGNAL:
+    if NOTIFY_SIGNAL and _should_send_signal_alert("confluence13", signal):
         send_telegram(telegram_alert.format_signal_alert(signal, contributing_str, symbol=SYMBOL))
 
     lot = calc_lot_size(info.balance, RISK_PER_TRADE, signal["entry"], signal["sl"])
@@ -2008,7 +2184,7 @@ def run_confluence_scan():
         logger.info("Confluence scan: max concurrent trades reached — skipping.")
         return
 
-    interval_blocked, interval_reason = check_trade_interval()
+    interval_blocked, interval_reason = check_trade_interval("confluence13")
     if interval_blocked:
         logger.info(f"Confluence scan: {interval_reason} — skipping.")
         return
@@ -2018,13 +2194,13 @@ def run_confluence_scan():
         return
 
     before_tickets = {p.ticket for p in (mt5.positions_get(symbol=SYMBOL) or [])}
+    _apply_order_options(signal, lot)
     order_result = send_order(signal, lot)
     retcode = getattr(order_result, "retcode", None)
     if retcode != mt5.TRADE_RETCODE_DONE:
         return
 
-    global _LAST_ORDER_TIME
-    _LAST_ORDER_TIME = datetime.now()
+    _record_order_time("confluence13")
 
     # Find the new position ticket so we can attribute league results later.
     after_positions = mt5.positions_get(symbol=SYMBOL) or []
@@ -2104,7 +2280,7 @@ def run_logic_groups_scan():
 
     result = strategies.score_all(
         data,
-        enabled_keys=set(strategies.STRATEGY_REGISTRY.keys()),
+        enabled_keys=CONFLUENCE_ENABLED_STRATEGIES,
         weights=adjusted_weights,
         bench_check=bench_check,
     )
@@ -2187,6 +2363,11 @@ def run_logic_groups_scan():
     group_label = chosen["group"]
 
     # ---- shared MM/risk gates (identical to run_confluence_scan) ----
+    danger, danger_reason = _mtr_is_danger(data)
+    if danger:
+        logger.debug(f"Logic groups scan: {danger_reason}")
+        return
+
     in_session, matched = is_within_trading_hours()
     if not in_session:
         logger.debug("Logic groups scan: outside selected trading session(s) — no new entries.")
@@ -2265,7 +2446,7 @@ def run_logic_groups_scan():
 
     contributing_str = f"{strat_key}={chosen['score']:.0f}% (League-prioritized)"
 
-    if NOTIFY_SIGNAL:
+    if NOTIFY_SIGNAL and _should_send_signal_alert(group_label, signal):
         send_telegram(telegram_alert.format_signal_alert(signal, contributing_str, symbol=SYMBOL))
 
     lot = calc_lot_size(info.balance, RISK_PER_TRADE, signal["entry"], signal["sl"])
@@ -2280,7 +2461,7 @@ def run_logic_groups_scan():
         logger.info(f"{group_label} scan: max concurrent trades reached — skipping.")
         return
 
-    interval_blocked, interval_reason = check_trade_interval()
+    interval_blocked, interval_reason = check_trade_interval(group_label)
     if interval_blocked:
         logger.info(f"{group_label} scan: {interval_reason} — skipping.")
         return
@@ -2290,13 +2471,13 @@ def run_logic_groups_scan():
         return
 
     before_tickets = {p.ticket for p in (mt5.positions_get(symbol=SYMBOL) or [])}
+    _apply_order_options(signal, lot)
     order_result = send_order(signal, lot)
     retcode = getattr(order_result, "retcode", None)
     if retcode != mt5.TRADE_RETCODE_DONE:
         return
 
-    global _LAST_ORDER_TIME
-    _LAST_ORDER_TIME = datetime.now()
+    _record_order_time(group_label)
 
     after_positions = mt5.positions_get(symbol=SYMBOL) or []
     new_positions = [p for p in after_positions if p.ticket not in before_tickets and p.magic == MAGIC_NUMBER]
@@ -2415,6 +2596,8 @@ def manage_breakeven():
     for pos in positions:
         if pos.magic != MAGIC_NUMBER:
             continue
+        if pos.sl == 0:
+            continue  # opened with use_sl=False — no SL to move to breakeven
         meta = entry_meta.get(str(pos.ticket))
         if not meta or not meta.get("risk_distance"):
             continue
@@ -2447,6 +2630,25 @@ def manage_breakeven():
 def open_positions_count():
     positions = mt5.positions_get(symbol=SYMBOL)
     return len(positions) if positions else 0
+
+
+def _apply_order_options(signal, lot):
+    """Mutates signal["sl"] and signal["tp2"] in-place according to ORDER_OPTIONS.
+    R:R gating (passes_risk_reward) has already run using the original strategy
+    SL/TP — this only modifies what is actually SENT to the broker, not the
+    setup-quality filter (option (b) per the spec)."""
+    sl_to_use = signal["sl"] if ORDER_OPTIONS["use_sl"] else 0.0
+    if ORDER_OPTIONS["use_tp"]:
+        if ORDER_OPTIONS["tp_mode"] == "fixed_usd":
+            fixed_tp = calc_tp_price_from_usd(
+                signal["entry"], signal["direction"], lot, ORDER_OPTIONS["tp_fixed_usd"])
+            tp_to_use = fixed_tp if fixed_tp is not None else signal["tp2"]
+        else:
+            tp_to_use = signal["tp2"]
+    else:
+        tp_to_use = 0.0
+    signal["sl"]  = sl_to_use
+    signal["tp2"] = tp_to_use
 
 
 def send_order(signal, lot):
@@ -2552,6 +2754,8 @@ def manage_trailing_stops():
     for pos in positions:
         if pos.magic != MAGIC_NUMBER:
             continue  # don't touch positions this EA didn't open
+        if pos.sl == 0:
+            continue  # opened with use_sl=False — no SL to trail
 
         is_long = pos.type == mt5.POSITION_TYPE_BUY
         price = tick.bid if is_long else tick.ask
@@ -2584,25 +2788,41 @@ def manage_trailing_stops():
 
 # ----------------------------- BASKET CLOSE ----------------------------------
 def close_position(pos, reason=""):
+    """Closes one position at market. Tries IOC fill first, then falls back
+    to FOK and RETURN if MT5 returns None (busy trade context). Returns the
+    successful OrderSendResult, or None if all attempts fail."""
     is_long = pos.type == mt5.POSITION_TYPE_BUY
     tick = mt5.symbol_info_tick(pos.symbol)
+    if tick is None:
+        logger.warning(f"close_position: no tick for {pos.symbol} — cannot close ticket {pos.ticket}")
+        return None
     price = tick.bid if is_long else tick.ask
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": pos.symbol,
-        "volume": pos.volume,
-        "type": mt5.ORDER_TYPE_SELL if is_long else mt5.ORDER_TYPE_BUY,
+    base_request = {
+        "action":   mt5.TRADE_ACTION_DEAL,
+        "symbol":   pos.symbol,
+        "volume":   pos.volume,
+        "type":     mt5.ORDER_TYPE_SELL if is_long else mt5.ORDER_TYPE_BUY,
         "position": pos.ticket,
-        "price": price,
+        "price":    price,
         "deviation": 20,
-        "magic": MAGIC_NUMBER,
-        "comment": f"Basket close: {reason}"[:31],
+        "magic":    MAGIC_NUMBER,
+        "comment":  f"Basket close: {reason}"[:31],
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
     }
-    result = mt5.order_send(request)
-    logger.info(f"Closed ticket {pos.ticket} ({reason}) | {result}")
-    return result
+    for filling in (mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN):
+        req = dict(base_request, type_filling=filling)
+        result = mt5.order_send(req)
+        if result is not None:
+            retcode = getattr(result, "retcode", None)
+            if retcode == mt5.TRADE_RETCODE_DONE:
+                logger.info(f"Closed ticket {pos.ticket} ({reason}) | retcode={retcode}")
+                return result
+            logger.warning(f"close_position ticket {pos.ticket} filling={filling} retcode={retcode} — trying next fill type")
+        else:
+            logger.warning(f"close_position ticket {pos.ticket} filling={filling} returned None — MT5 context busy, retrying")
+        time.sleep(0.3)
+    logger.error(f"close_position: all attempts failed for ticket {pos.ticket} ({reason})")
+    return None
 
 
 def check_basket_close():
@@ -2632,8 +2852,13 @@ def check_basket_close():
     if reason:
         logger.info(f"Basket close triggered: {reason} "
               f"(total floating P&L: {total_profit:.2f})")
+        closed_count = 0
         for pos in positions:
-            close_position(pos, reason=reason)
+            result = close_position(pos, reason=reason)
+            if result is not None:
+                closed_count += 1
+            time.sleep(0.1)  # give MT5 trade context breathing room between closes
+        logger.info(f"Basket close: {closed_count}/{len(positions)} positions closed successfully.")
 
 
 # ----------------------------- MAIN LOOP ------------------------------------
@@ -2678,7 +2903,7 @@ def run_once():
     # (2) Signal-found notification — legacy-mode equivalent of the
     # confluence path's signal alert, fired as soon as check_entry_signal()
     # returns a qualifying setup (before order placement is attempted).
-    if NOTIFY_SIGNAL:
+    if NOTIFY_SIGNAL and _should_send_signal_alert("legacy", signal):
         send_telegram(telegram_alert.format_signal_alert(signal, symbol=SYMBOL))
 
     lot = calc_lot_size(info.balance, RISK_PER_TRADE, signal["entry"], signal["sl"])
@@ -2714,6 +2939,7 @@ def run_once():
         return
 
     before_tickets = {p.ticket for p in (mt5.positions_get(symbol=SYMBOL) or [])}
+    _apply_order_options(signal, lot)
     order_result = send_order(signal, lot)
 
     # (3) Order-open notification + entry_meta write — legacy mode previously
@@ -2806,6 +3032,7 @@ def main():
                 # self-throttled internally (interval/dedup-state checks), so
                 # it's safe to call all four every loop tick.
                 check_macro_update_notify()
+                check_proxy_staleness_notify()
                 check_pre_news_notify()
                 check_post_news_notify()
                 check_daily_status_notify()

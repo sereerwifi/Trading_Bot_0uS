@@ -269,6 +269,28 @@ def _http_get(url, headers=None):
 # being lost if the bot errors. sqlite3 is in the Python standard library, so
 # this needs no extra install and no credentials, unlike the optional Google
 # Sheets export below.
+# Known proxy/fallback source names that trigger staleness badges, keyed by
+# the same data_key strings used in get_macro_snapshot()'s
+# update_proxy_fallback_state() calls. Populated from the actual "source"
+# tags each fetcher emits on its fallback path (see _fetch_comex_via_cot_proxy,
+# _fetch_etf_flow_via_yahoo, _fetch_yield10y_raw, _fetch_fed_expectation_raw
+# above) — confirmed against the live code, not guessed. Even though the
+# CME/SPDR/FRED blocks on this VPS are currently persistent (so the badge
+# will likely show continuously rather than transiently), the user explicitly
+# wants that visibility on the dashboard precisely BECAUSE macro_bias (weight
+# 1.2, highest-weighted strategy) is scoring off degraded data for as long as
+# the block lasts — "permanent" is not a reason to suppress this, it's the
+# reason it was requested.
+_PROXY_SOURCE_NAMES: "dict[str, set[str]]" = {
+    "comex_gold":     {"cot_proxy"},
+    "comex_silver":   {"cot_proxy"},
+    "etf_gld":        {"yahoo_proxy"},
+    "etf_slv":        {"yahoo_proxy"},
+    "yield10y":       {"yahoo_TNX"},
+    "fed_expectation": {"yahoo_FVX"},
+}
+
+
 def _db_connect():
     conn = sqlite3.connect(DB_FILE, timeout=10)
     conn.execute("""CREATE TABLE IF NOT EXISTS macro_history (
@@ -280,6 +302,12 @@ def _db_connect():
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_macro_history_category "
                  "ON macro_history(category, fetched_at)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS proxy_fallback_state (
+        data_key TEXT PRIMARY KEY,
+        is_proxy INTEGER NOT NULL,
+        since TEXT NOT NULL,
+        proxy_source TEXT NOT NULL DEFAULT ''
+    )""")
     return conn
 
 
@@ -932,6 +960,71 @@ def fetch_myfxbook_sentiment(symbol="XAUUSD", email=None, password=None):
                    lambda: _fetch_myfxbook_sentiment_raw(symbol, email, password))
 
 
+# ----------------------------- proxy fallback tracker ------------------------
+def update_proxy_fallback_state(data_key, result):
+    """Called after each fetch: if result's source is a known proxy/fallback,
+    records when it first became a proxy (never resets that timestamp on
+    subsequent proxy fetches). Clears the row when source returns to primary."""
+    if result is None:
+        return
+    source = result.get("source", "")
+    proxy_sources = _PROXY_SOURCE_NAMES.get(data_key, set())
+    is_proxy = source in proxy_sources
+    try:
+        conn = _db_connect()
+        with conn:
+            row = conn.execute(
+                "SELECT is_proxy, since FROM proxy_fallback_state WHERE data_key=?",
+                (data_key,)
+            ).fetchone()
+            if is_proxy:
+                if row is None or row[0] == 0:
+                    # First time on proxy — record "since" now
+                    conn.execute(
+                        "INSERT OR REPLACE INTO proxy_fallback_state "
+                        "(data_key, is_proxy, since, proxy_source) VALUES (?,1,?,?)",
+                        (data_key, datetime.now(timezone.utc).isoformat(), source)
+                    )
+                # else: already on proxy — leave "since" untouched
+            else:
+                if row is not None and row[0] == 1:
+                    # Recovered to primary — clear the row
+                    conn.execute(
+                        "DELETE FROM proxy_fallback_state WHERE data_key=?",
+                        (data_key,)
+                    )
+        conn.close()
+    except Exception:
+        pass
+
+
+def get_proxy_staleness_report():
+    """Returns list of dicts for all data keys currently on proxy/fallback
+    sources: [{"data_key": ..., "since": ISO str, "proxy_source": ...,
+    "hours": float}]. Empty list when everything is on primary sources."""
+    try:
+        conn = _db_connect()
+        rows = conn.execute(
+            "SELECT data_key, since, proxy_source FROM proxy_fallback_state WHERE is_proxy=1"
+        ).fetchall()
+        conn.close()
+        out = []
+        now = datetime.now(timezone.utc)
+        for data_key, since_iso, proxy_source in rows:
+            try:
+                since_dt = datetime.fromisoformat(since_iso)
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=timezone.utc)
+                hours = (now - since_dt).total_seconds() / 3600.0
+            except Exception:
+                hours = 0.0
+            out.append({"data_key": data_key, "since": since_iso,
+                        "proxy_source": proxy_source, "hours": hours})
+        return out
+    except Exception:
+        return []
+
+
 # ----------------------------- price sanity cross-check ----------------------
 def fetch_reference_gold_price():
     """Free, no-key spot/futures gold quote from Yahoo Finance (GC=F COMEX
@@ -959,14 +1052,28 @@ def get_macro_snapshot(symbol_metal="GOLD", myfxbook_email=None,
     Myfxbook call entirely (it costs a real HTTP request unlike the other
     cached-only sources here)."""
     etf_ticker = "GLD" if symbol_metal == "GOLD" else "SLV"
+    comex   = fetch_comex_inventory(symbol_metal)
+    cot     = fetch_cot_report(symbol_metal)
+    etf     = fetch_etf_flow(etf_ticker)
+    dxy     = fetch_dxy()
+    yld     = fetch_yield_10y()
+    fed     = fetch_fed_expectation()
+    cal     = fetch_economic_calendar()
+    myfxbook = fetch_myfxbook_sentiment(myfxbook_symbol, myfxbook_email, myfxbook_password)
+
+    # Track proxy/fallback state for the dashboard staleness badge.
+    update_proxy_fallback_state(f"comex_{symbol_metal.lower()}", comex)
+    update_proxy_fallback_state(f"etf_{etf_ticker.lower()}", etf)
+    update_proxy_fallback_state("yield10y", yld)
+    update_proxy_fallback_state("fed_expectation", fed)
+
     return {
-        "comex": fetch_comex_inventory(symbol_metal),
-        "cot": fetch_cot_report(symbol_metal),
-        "etf_flow": fetch_etf_flow(etf_ticker),
-        "dxy": fetch_dxy(),
-        "yield10y": fetch_yield_10y(),
-        "fed_expectation": fetch_fed_expectation(),
-        "calendar": fetch_economic_calendar(),
-        "myfxbook_sentiment": fetch_myfxbook_sentiment(
-            myfxbook_symbol, myfxbook_email, myfxbook_password),
+        "comex": comex,
+        "cot": cot,
+        "etf_flow": etf,
+        "dxy": dxy,
+        "yield10y": yld,
+        "fed_expectation": fed,
+        "calendar": cal,
+        "myfxbook_sentiment": myfxbook,
     }

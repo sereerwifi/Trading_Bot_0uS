@@ -1,5 +1,5 @@
 """
-Multi-Strategy (24) Confluence Scoring Engine for the XAUUSD MT5 EA
+Multi-Strategy (31) Confluence Scoring Engine for the XAUUSD MT5 EA
 =============================================================
 Each strategy function below scores the CURRENT market 0-100 for "long" and
 0-100 for "short" independently (a market can score on both sides at once —
@@ -35,6 +35,7 @@ Returns: {"long": float 0-100, "short": float 0-100, "note": str}
 
 import numpy as np
 import pandas as pd
+from collections import deque
 
 # ----------------------------- shared indicator helpers ---------------------
 # Self-contained (deliberately not imported from xauusd_mt5_strategy.py) to
@@ -1532,6 +1533,523 @@ def score_climax_reversal_sr(data, move_lookback=8, atr_mult_extreme=2.5,
     return {"long": long_score, "short": short_score, "note": note}
 
 
+# ----------------------------- MTR regime helpers ------------------------------
+def _efficiency_ratio(series, period=20):
+    """Kaufman Efficiency Ratio: net directional move / sum of absolute moves.
+    Near 1 = strongly trending; near 0 = choppy/ranging."""
+    if len(series) < period + 2:
+        return 0.5
+    direction = abs(float(series.iloc[-1]) - float(series.iloc[-period - 1]))
+    path = float(series.diff().abs().iloc[-period:].sum())
+    if path < 1e-10:
+        return 0.5
+    return float(np.clip(direction / path, 0.0, 1.0))
+
+
+def _wilder_adx(df, period=14):
+    """Wilder's ADX. Returns (adx, di_plus, di_minus) as pandas Series."""
+    h, l, c = df["high"], df["low"], df["close"]
+    tr = pd.concat([h - l, (h - c.shift(1)).abs(), (l - c.shift(1)).abs()], axis=1).max(axis=1)
+    up = (h - h.shift(1)).fillna(0.0)
+    dn = (l.shift(1) - l).fillna(0.0)
+    dm_p = pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index)
+    dm_m = pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index)
+    alpha = 1.0 / period
+    atr_w = tr.ewm(alpha=alpha, adjust=False).mean()
+    dip   = dm_p.ewm(alpha=alpha, adjust=False).mean()
+    dim   = dm_m.ewm(alpha=alpha, adjust=False).mean()
+    di_p  = (dip / atr_w.replace(0, np.nan)) * 100
+    di_m  = (dim / atr_w.replace(0, np.nan)) * 100
+    dx    = ((di_p - di_m).abs() / (di_p + di_m).replace(0, np.nan)) * 100
+    adx   = dx.ewm(alpha=alpha, adjust=False).mean()
+    return adx, di_p, di_m
+
+
+def _variance_ratio(series, k=5):
+    """Lo-MacKinlay variance ratio. VR < 1 = mean-reversion; VR > 1 = persistence."""
+    if len(series) < k + 10:
+        return 1.0
+    log_ret = np.log(series / series.shift(1)).dropna()
+    if len(log_ret) < k + 5:
+        return 1.0
+    var_1 = float(log_ret.rolling(2).var().iloc[-1])
+    log_ret_k = np.log(series / series.shift(k)).dropna()
+    var_k = float(log_ret_k.rolling(k + 1).var().iloc[-1])
+    if pd.isna(var_1) or var_1 < 1e-20 or pd.isna(var_k):
+        return 1.0
+    return float(np.clip(var_k / (k * var_1), 0.0, 5.0))
+
+
+# ----------------------------- 27. MTR Range Regime ---------------------------
+def score_mtr_range_regime(data):
+    """27th strategy — MTR-inspired quantitative range-regime detector. Votes
+    Long AND Short symmetrically when the H1 market is measurably in a
+    mean-reversion (ranging) regime. Scores 0/0 in trending or danger regimes.
+
+    Five components (weights from MTR RegimeScore.mqh):
+      30% low Efficiency Ratio (ER < 0.35 → weak directional persistence)
+      25% ADX flat/falling below 22 (no strong trend)
+      20% price inside the 55-bar H1 Donchian band (range-bound)
+      15% Variance Ratio(5) < 0.98 (mean-reversion tendency)
+      10% ATR not spiking (< 1.3× 50-bar baseline = normal volatility)
+
+    Returns 0/0 if ATR shock > 1.5× baseline (danger/volatility spike)."""
+    df = data.get("h1")
+    if df is None or len(df) < 65:
+        return {"long": 0.0, "short": 0.0, "note": "insufficient H1 data for MTR range regime"}
+
+    close = df["close"]
+
+    # ATR shock — danger gate
+    atr_now = float(df["atr14"].iloc[-1]) if not pd.isna(df["atr14"].iloc[-1]) else 0.0
+    atr_vals = df["atr14"].dropna()
+    atr_baseline = float(atr_vals.iloc[-51:-1].mean()) if len(atr_vals) >= 52 else atr_now
+    atr_shock = atr_now / atr_baseline if atr_baseline > 0 else 1.0
+    if atr_shock > 1.5:
+        return {"long": 0.0, "short": 0.0,
+                "note": f"MTR danger: ATR spike {atr_shock:.2f}x — range regime suspended"}
+
+    # Component 1: Efficiency Ratio (low → choppy/range)
+    er = _efficiency_ratio(close, 20)
+    low_er_score = 1.0 if er < 0.28 else (0.5 if er < 0.38 else 0.0)
+
+    # Component 2: ADX flat/falling (no trend)
+    try:
+        adx, _, _ = _wilder_adx(df.tail(60).reset_index(drop=True), 14)
+        adx_now   = float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 25.0
+        adx_slope = float(adx.iloc[-1] - adx.iloc[-5]) if len(adx) >= 5 else 0.0
+        adx_flat_score = 1.0 if (adx_now < 20 and adx_slope <= 0) else (0.5 if adx_now < 23 else 0.0)
+    except Exception:
+        adx_now, adx_flat_score = 25.0, 0.0
+
+    # Component 3: price inside Donchian 55-period H1
+    don_p = min(55, len(df) - 1)
+    don_h = float(df["high"].iloc[-don_p:].max())
+    don_l = float(df["low"].iloc[-don_p:].min())
+    mid   = float((close.iloc[-1] + close.iloc[-2]) / 2)
+    if don_h > don_l:
+        pos = (mid - don_l) / (don_h - don_l)
+        inside_score = float(np.clip(1.0 - abs(pos - 0.5) * 2, 0.0, 1.0))
+    else:
+        inside_score = 0.5
+
+    # Component 4: Variance Ratio < 0.98 (mean-reversion)
+    vr5 = _variance_ratio(close, 5)
+    vr_mr_score = 1.0 if vr5 < 0.90 else (0.5 if vr5 < 0.98 else 0.0)
+
+    # Component 5: normal volatility
+    normal_vol_score = 1.0 if atr_shock < 1.1 else (0.5 if atr_shock < 1.3 else 0.0)
+
+    range_score = (0.30 * low_er_score + 0.25 * adx_flat_score + 0.20 * inside_score
+                   + 0.15 * vr_mr_score + 0.10 * normal_vol_score)
+
+    if range_score < 0.45:
+        return {"long": 0.0, "short": 0.0,
+                "note": f"MTR range score {range_score:.2f} below threshold — not a range market"}
+
+    score_pct = _clip(range_score * 100)
+    note = (f"MTR range regime: score={range_score:.2f} ER={er:.2f} ADX={adx_now:.1f} "
+            f"VR5={vr5:.2f} in_band={inside_score:.2f} atr_shock={atr_shock:.2f}")
+    return {"long": score_pct, "short": score_pct, "note": note}
+
+
+# ----------------------------- 28. MTR Trend Regime ---------------------------
+def score_mtr_trend_regime(data):
+    """28th strategy — MTR-inspired quantitative trend-regime detector. Votes
+    directionally (Long or Short) when the H1 market is in a confirmed trend.
+    Complements score_mtr_range_regime — the two are inversely correlated.
+
+    Four components (weights from MTR RegimeScore.mqh):
+      30% high Efficiency Ratio (ER > 0.55 → strong directional persistence)
+      25% ADX rising above 22 (strengthening trend)
+      25% price outside 55-bar Donchian (breakout confirmed)
+      20% EMA50 slope alignment (confirms direction)
+
+    Direction: votes Long when EMA50 rising + DI+ > DI−; Short when falling."""
+    df = data.get("h1")
+    if df is None or len(df) < 65:
+        return {"long": 0.0, "short": 0.0, "note": "insufficient H1 data for MTR trend regime"}
+
+    close = df["close"]
+
+    # Component 1: high ER (trending)
+    er = _efficiency_ratio(close, 20)
+    high_er_score = 1.0 if er > 0.62 else (0.5 if er > 0.50 else 0.0)
+
+    # Component 2: ADX rising and strong
+    try:
+        adx, di_p, di_m = _wilder_adx(df.tail(60).reset_index(drop=True), 14)
+        adx_now   = float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 0.0
+        adx_slope = float(adx.iloc[-1] - adx.iloc[-5]) if len(adx) >= 5 else 0.0
+        adx_rising_score = 1.0 if (adx_now > 25 and adx_slope > 0) else (0.5 if adx_now > 22 else 0.0)
+        dip_now = float(di_p.iloc[-1]) if not pd.isna(di_p.iloc[-1]) else 50.0
+        dim_now = float(di_m.iloc[-1]) if not pd.isna(di_m.iloc[-1]) else 50.0
+        adx_bullish = dip_now > dim_now
+    except Exception:
+        adx_now, adx_rising_score, adx_bullish = 0.0, 0.0, True
+
+    # Component 3: Donchian breakout
+    don_p     = min(55, len(df) - 1)
+    don_h     = float(df["high"].iloc[-don_p:].max())
+    don_l     = float(df["low"].iloc[-don_p:].min())
+    last_c    = float(close.iloc[-1])
+    break_up   = last_c >= don_h * 0.998
+    break_down = last_c <= don_l * 1.002
+    breakout_score = 1.0 if (break_up or break_down) else 0.0
+
+    # Component 4: EMA50 slope
+    ema50 = df["ema50"]
+    if len(ema50) >= 5 and not pd.isna(ema50.iloc[-1]) and not pd.isna(ema50.iloc[-5]):
+        ema50_slope = float(ema50.iloc[-1] - ema50.iloc[-5])
+        ema_bullish = ema50_slope > 0
+        atr_now = float(df["atr14"].iloc[-1]) if not pd.isna(df["atr14"].iloc[-1]) else 1.0
+        slope_score = float(np.clip(abs(ema50_slope) / max(atr_now, 1e-10), 0.0, 1.0))
+    else:
+        ema50_slope, ema_bullish, slope_score = 0.0, True, 0.0
+
+    # Direction consensus (3 signals)
+    bull_votes  = sum([adx_bullish, break_up,   ema_bullish])
+    bear_votes  = sum([not adx_bullish, break_down, not ema_bullish])
+    if bull_votes == bear_votes:
+        return {"long": 0.0, "short": 0.0, "note": "MTR trend: direction signals split — no vote"}
+
+    direction = "long" if bull_votes > bear_votes else "short"
+
+    trend_score = (0.30 * high_er_score + 0.25 * adx_rising_score
+                   + 0.25 * breakout_score + 0.20 * slope_score)
+
+    if trend_score < 0.40:
+        return {"long": 0.0, "short": 0.0,
+                "note": f"MTR trend score {trend_score:.2f} below threshold"}
+
+    score_pct = _clip(trend_score * 100)
+    note = (f"MTR trend regime ({direction}): score={trend_score:.2f} ER={er:.2f} "
+            f"ADX={adx_now:.1f} slope={ema50_slope:.2f} "
+            f"breakout={'up' if break_up else 'down' if break_down else 'none'}")
+    return {
+        "long":  score_pct if direction == "long"  else 0.0,
+        "short": score_pct if direction == "short" else 0.0,
+        "note":  note,
+    }
+
+
+# ----------------------------- 29. HTF Zone + M/W Reversal --------------------
+def score_zone_mw_reversal(data, h4_lookback=80, zone_tol_atr=0.35, min_touches=2,
+                            m15_lookback=60, peak_tol_atr=0.30, neckline_break_atr=0.15):
+    """29th strategy -- multi-touch H4 zone (the highest timeframe this bot
+    has wired in -- standing in for the Weekly/Daily "key level" step from
+    the user's uploaded gold swing-trading course material) combined with a
+    nested M15 double-top/double-bottom ("M/W") reversal pattern confirmed
+    by a neckline break. This is the entry method described and worked
+    through repeatedly across all three of the user's uploaded documents
+    ("GOLD Fundamentals", "Gold Live Trade and Analysis", "...Profits"):
+    draw HTF zones where price has reacted multiple times, wait for price to
+    return to the zone, then drill down to a lower timeframe and take the
+    SECOND touch/leg of a double-top/double-bottom at that zone, entering on
+    the candle that breaks the pattern's neckline.
+
+    Two gates must BOTH be true before this strategy votes:
+
+      1. PROVEN ZONE: at least `min_touches` H4 swing highs (or lows) within
+         `zone_tol_atr` x ATR(H4) of each other -- not gated on the current
+         close, since by the time the M15 neckline breaks price has already
+         moved away from the zone by design; gate 2 below is what ties the
+         pattern back to a specific zone. This is the "level the market has
+         reacted to many
+         times" step from the course, using H4 (the highest timeframe
+         already wired into this bot) in place of the course's Weekly/Daily
+         charts -- no new data source required.
+      2. M/W PATTERN AT THE ZONE: on M15, the two most recent swing highs
+         (when the zone is acting as resistance) or swing lows (when it's
+         acting as support) sit within `peak_tol_atr` x ATR(M15) of each
+         other near that zone, AND the latest closed M15 bar has just
+         closed through the neckline (the low between the two tops, or the
+         high between the two bottoms) by at least `neckline_break_atr` x
+         ATR(M15) -- the "official entry" moment the course repeatedly
+         points to as the second leg's confirmation.
+
+    Needs only H4 + M15 OHLC + atr14, both already present in every scan --
+    no new data wiring beyond a registry entry + weight/label defaults,
+    matching the pattern used for the 26th-28th strategies."""
+    h4 = data.get("h4")
+    m15 = data.get("m15")
+    if h4 is None or m15 is None or len(h4) < 30 or len(m15) < m15_lookback + 10:
+        return {"long": 0.0, "short": 0.0, "note": "insufficient H4/M15 data"}
+
+    atr_h4 = h4["atr14"].iloc[-1]
+    atr_h4 = atr_h4 if atr_h4 and not pd.isna(atr_h4) else (h4["high"] - h4["low"]).tail(20).mean()
+    atr_h4 = max(atr_h4, 1e-6)
+    atr_m15 = m15["atr14"].iloc[-1]
+    atr_m15 = atr_m15 if atr_m15 and not pd.isna(atr_m15) else (m15["high"] - m15["low"]).tail(20).mean()
+    atr_m15 = max(atr_m15, 1e-6)
+
+    # --- Gate 1: find multi-touch H4 zones (don't gate on the current close --
+    # by the time the M15 neckline breaks, price has already moved AWAY from
+    # the zone by design; gate 2 below checks the pattern's peak/trough sits
+    # at the zone instead).
+    highs, lows = _swing_points(h4, lookback=h4_lookback, order=3)
+
+    def _zone_clusters(points):
+        clusters, seen = [], []
+        for _, lvl in points:
+            if any(abs(lvl - s) <= atr_h4 * zone_tol_atr for s in seen):
+                continue
+            touches = sum(1 for _, p in points if abs(p - lvl) <= atr_h4 * zone_tol_atr)
+            if touches >= min_touches:
+                clusters.append((lvl, touches))
+                seen.append(lvl)
+        return clusters
+
+    res_clusters = _zone_clusters(highs)
+    sup_clusters = _zone_clusters(lows)
+
+    if not res_clusters and not sup_clusters:
+        return {"long": 0.0, "short": 0.0, "note": "no multi-touch H4 zone found"}
+
+    # --- Gate 2: M/W pattern + neckline break on M15 ---
+    m15_recent = m15.tail(m15_lookback).reset_index(drop=True)
+    m_highs, m_lows = _swing_points(m15_recent, lookback=m15_lookback, order=2)
+    last_closed = m15_recent.iloc[-1]
+
+    long_score = short_score = 0.0
+    note = "no M/W reversal pattern at a proven H4 zone yet on M15"
+
+    if res_clusters and len(m_highs) >= 2:
+        p2_idx, p2 = m_highs[-1]
+        p1_idx, p1 = m_highs[-2]
+        symmetric = abs(p1 - p2) <= atr_m15 * peak_tol_atr
+        zone_hits = [c for c in res_clusters if abs(p2 - c[0]) <= atr_h4 * zone_tol_atr * 1.5]
+        if symmetric and zone_hits and p2_idx > p1_idx:
+            res_level, res_touches = max(zone_hits, key=lambda c: c[1])
+            neckline = m15_recent["low"].iloc[p1_idx:p2_idx + 1].min()
+            broke = last_closed["close"] < neckline - atr_m15 * neckline_break_atr
+            if broke:
+                sym_quality = 1.0 - abs(p1 - p2) / max(atr_m15 * peak_tol_atr, 1e-6)
+                break_quality = (neckline - last_closed["close"]) / max(atr_m15, 1e-6)
+                short_score = _clip(50 + res_touches * 8 + sym_quality * 20 + break_quality * 20)
+                note = (f"double top at {res_touches}-touch H4 resistance "
+                        f"[{res_level:.2f}] -- M15 neckline broken")
+
+    if sup_clusters and len(m_lows) >= 2:
+        p2_idx, p2 = m_lows[-1]
+        p1_idx, p1 = m_lows[-2]
+        symmetric = abs(p1 - p2) <= atr_m15 * peak_tol_atr
+        zone_hits = [c for c in sup_clusters if abs(p2 - c[0]) <= atr_h4 * zone_tol_atr * 1.5]
+        if symmetric and zone_hits and p2_idx > p1_idx:
+            sup_level, sup_touches = max(zone_hits, key=lambda c: c[1])
+            neckline = m15_recent["high"].iloc[p1_idx:p2_idx + 1].max()
+            broke = last_closed["close"] > neckline + atr_m15 * neckline_break_atr
+            if broke:
+                sym_quality = 1.0 - abs(p1 - p2) / max(atr_m15 * peak_tol_atr, 1e-6)
+                break_quality = (last_closed["close"] - neckline) / max(atr_m15, 1e-6)
+                long_score = _clip(50 + sup_touches * 8 + sym_quality * 20 + break_quality * 20)
+                note = (f"double bottom at {sup_touches}-touch H4 support "
+                        f"[{sup_level:.2f}] -- M15 neckline broken")
+
+    return {"long": long_score, "short": short_score, "note": note}
+
+
+# ----------------------------- 30/31. Smart Money Liquidity Sweep --------------
+# Module-level: tracks the last few DOM (bid/ask volume) snapshots so we can
+# measure HOW FAST the order-book imbalance is shifting, not just whether it's
+# lopsided right now. score_order_flow_dom only ever looks at one snapshot in
+# isolation, which can't tell "a sudden imbalance just appeared" apart from
+# "this symbol is always a bit bid-heavy" -- this fixes that gap. Shared by
+# both smart_money_sweep registry entries (morning/night), since they read the
+# same single live DOM feed each scan; the dedup guard below stops a single
+# scan tick from being counted twice just because two registry entries call
+# into this module in the same tick.
+_DOM_IMBALANCE_HISTORY = deque(maxlen=6)
+
+
+def _update_dom_imbalance_history(data):
+    """Appends (timestamp, imbalance) once per scan tick, only if DOM data is
+    actually present. No-ops silently if the broker/symbol doesn't expose
+    Level2 -- the caller treats a too-short history as "no DOM signal" rather
+    than an error."""
+    dom = data.get("dom")
+    now = data.get("now")
+    if not dom or now is None:
+        return
+    bid_vol = dom.get("bid_volume", 0.0)
+    ask_vol = dom.get("ask_volume", 0.0)
+    total = bid_vol + ask_vol
+    if total <= 0:
+        return
+    imbalance = (bid_vol - ask_vol) / total
+    ts = now_ts(now)
+    if _DOM_IMBALANCE_HISTORY and _DOM_IMBALANCE_HISTORY[-1][0] == ts:
+        return  # same scan tick already recorded (e.g. by the twin morning/night entry)
+    _DOM_IMBALANCE_HISTORY.append((ts, imbalance))
+
+
+def _dom_imbalance_delta():
+    """Returns (delta, latest_imbalance) across the tracked window -- how much
+    the bid/ask imbalance has shifted from the oldest to the newest snapshot
+    currently held. (0.0, 0.0) if there isn't enough history yet (e.g. right
+    after the bot starts, or the broker doesn't expose DOM at all)."""
+    if len(_DOM_IMBALANCE_HISTORY) < 3:
+        return 0.0, 0.0
+    oldest_imb = _DOM_IMBALANCE_HISTORY[0][1]
+    latest_imb = _DOM_IMBALANCE_HISTORY[-1][1]
+    return latest_imb - oldest_imb, latest_imb
+
+
+def score_smart_money_sweep(data, session_start=(7, 0), session_end=(10, 0),
+                             range_lookback_bars=120, sweep_atr_mult=0.3,
+                             reclaim_bars=3, dom_delta_threshold=0.25,
+                             spike_atr_mult=2.5, wick_ratio=0.6,
+                             session_label="session"):
+    """30th/31st strategy -- user-requested "smart money / market maker
+    liquidity sweep" detector for super-scalping, combining 3 independent
+    signals that each point at the same underlying event (a deliberate
+    clearing of resting buy/sell stops just before a fast directional move),
+    scored higher the more of them fire together rather than any one alone:
+
+      1. STOP-HUNT SWEEP + FAST RECLAIM (M1): a wick pierces the high/low of
+         the recently-built range by >= sweep_atr_mult x ATR(M1), then price
+         closes back inside that range within `reclaim_bars` candles. This is
+         the M1-speed version of score_liquidity_sweep (which only runs on H1
+         -- far too slow to use for scalping entries).
+      2. DOM IMBALANCE SHIFTING FAST: the live bid/ask volume imbalance (see
+         score_order_flow_dom) has moved by at least `dom_delta_threshold`
+         across the last few scan ticks -- i.e. not just lopsided, but
+         actively getting more lopsided right now. Needs data["dom"]; if the
+         broker/symbol doesn't expose Level2, this signal simply never fires
+         (the other two still can). By itself this signal NEVER votes --
+         DOM-only with no price-action confirmation is too noisy -- it only
+         adds conviction on top of signal 1 or 3.
+      3. ABNORMAL SPIKE + WICK REJECTION (M1): the latest M1 bar's range is
+         >= spike_atr_mult x ATR(M1) (a single candle far bigger than normal
+         M1 noise) with a one-sided wick covering >= wick_ratio of that bar,
+         closing back the other way. The fast-timeframe cousin of
+         score_climax_reversal_sr's rejection-candle check, minus its 8-bar
+         "exhausted move" lead-in -- scalping needs to react to the spike
+         candle itself, the instant it closes.
+
+    Scoring: 1 confirming signal -> ~35, 2 -> ~65, all 3 -> ~90+, scaled up
+    further by how extreme the pierce/spike/DOM-shift is. Direction is always
+    OPPOSITE the sweep/spike (stops cleared above -> short bias, stops
+    cleared below -> long bias), matching score_liquidity_sweep's convention.
+
+    SESSION GATING -- IMPORTANT TIMEZONE NOTE: unlike the existing scalp_*
+    strategies (whose docstrings describe their session defaults in broker
+    time, UTC+3), this VPS's build_market_data() sets data["now"] = Python's
+    datetime.now(), and this machine's clock is documented elsewhere in this
+    file (xauusd_mt5_strategy.py's module docstring, "Trading-hours filter"
+    section) as being set to Thailand local time (UTC+7) -- not broker time.
+    So `session_start`/`session_end` here are plain Thai/Bangkok wall-clock
+    hours, used as-is with no UTC+3 conversion. Defaults: morning session
+    07:00-10:00 (Bangkok Asia-session liquidity, before London desks are
+    active), night session 22:00-00:00 is NOT used here because it crosses
+    midnight awkwardly for this simple same-day compare -- the night entry
+    below instead uses 02:00-04:00 directly (US-close liquidity), matching
+    what the user actually asked for. Register this function twice in
+    STRATEGY_REGISTRY (see below) with different windows/labels -- do NOT
+    reuse the scalp_*'s "broker time" defaults here, they are not the same
+    clock as data["now"] on this VPS. This mismatch between the scalp_*
+    docstrings and the actual data["now"] clock looks like a pre-existing
+    inconsistency in this codebase -- flagged here, not silently fixed
+    elsewhere, since changing the scalp_* strategies' behavior wasn't asked
+    for and could shift when they fire."""
+    df = data.get("m1")
+    now = data.get("now")
+    if df is None or len(df) < 30 or now is None:
+        return {"long": 0.0, "short": 0.0,
+                "note": "M1 data not available — add 'm1' to build_market_data()"}
+
+    _update_dom_imbalance_history(data)
+
+    sess_start = pd.Timestamp.combine(now.date(), pd.Timestamp(f"{session_start[0]:02d}:{session_start[1]:02d}").time())
+    sess_end = pd.Timestamp.combine(now.date(), pd.Timestamp(f"{session_end[0]:02d}:{session_end[1]:02d}").time())
+    if not (sess_start <= now_ts(now) <= sess_end):
+        return {"long": 0.0, "short": 0.0,
+                "note": f"outside {session_label} smart-money sweep window"}
+
+    window = df.tail(max(range_lookback_bars, reclaim_bars + 10)).reset_index(drop=True)
+    if len(window) < reclaim_bars + 10:
+        return {"long": 0.0, "short": 0.0, "note": "insufficient M1 data for this session window"}
+
+    atr_now = window["atr14"].iloc[-1]
+    atr_now = atr_now if atr_now and not pd.isna(atr_now) else (window["high"] - window["low"]).tail(20).mean()
+    atr_now = max(atr_now, 1e-6)
+
+    pre_window = window.iloc[:-reclaim_bars]
+    range_high, range_low = pre_window["high"].max(), pre_window["low"].min()
+    recent_bars = window.tail(reclaim_bars)
+    last = recent_bars.iloc[-1]
+
+    # --- Signal 1: stop-hunt sweep + fast reclaim ---
+    swept_high = recent_bars["high"].max() > range_high
+    pierce_high = (recent_bars["high"].max() - range_high) / atr_now if swept_high else 0.0
+    sweep_high_signal = swept_high and last["close"] < range_high and pierce_high >= sweep_atr_mult
+
+    swept_low = recent_bars["low"].min() < range_low
+    pierce_low = (range_low - recent_bars["low"].min()) / atr_now if swept_low else 0.0
+    sweep_low_signal = swept_low and last["close"] > range_low and pierce_low >= sweep_atr_mult
+
+    # --- Signal 3: abnormal spike + wick rejection on the latest bar ---
+    bar_rng = max(last["high"] - last["low"], 1e-6)
+    upper_wick = last["high"] - max(last["open"], last["close"])
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+    is_spike = bar_rng >= atr_now * spike_atr_mult
+    spike_bear_reject = is_spike and (upper_wick / bar_rng) >= wick_ratio and last["close"] < last["open"]
+    spike_bull_reject = is_spike and (lower_wick / bar_rng) >= wick_ratio and last["close"] > last["open"]
+
+    # --- Signal 2: DOM imbalance shifting fast (only ever a bonus, never votes alone) ---
+    dom_delta, _dom_latest = _dom_imbalance_delta()
+    dom_bear_signal = dom_delta <= -dom_delta_threshold
+    dom_bull_signal = dom_delta >= dom_delta_threshold
+
+    def _combo_score(n_signals, quality):
+        base = {1: 35.0, 2: 65.0, 3: 90.0}.get(n_signals, 0.0)
+        return _clip(base + quality)
+
+    short_price_signal = sweep_high_signal or spike_bear_reject
+    long_price_signal = sweep_low_signal or spike_bull_reject
+
+    short_score = long_score = 0.0
+    note = f"no smart-money sweep signal in {session_label} window"
+
+    if short_price_signal:
+        dom_confirms_short = dom_bear_signal
+        n = int(sweep_high_signal) + int(spike_bear_reject) + int(dom_confirms_short)
+        quality = 0.0
+        parts = []
+        if sweep_high_signal:
+            quality += min(pierce_high / sweep_atr_mult, 2.0) * 5
+            parts.append(f"sweep above {range_high:.2f} ({pierce_high:.2f}xATR) reclaimed")
+        if spike_bear_reject:
+            quality += min(bar_rng / (atr_now * spike_atr_mult), 2.0) * 5
+            parts.append("abnormal up-wick spike rejected")
+        if dom_confirms_short:
+            quality += min(abs(dom_delta) / dom_delta_threshold, 2.0) * 5
+            parts.append(f"DOM imbalance swinging ask-heavy ({dom_delta * 100:+.0f}%)")
+        short_score = _combo_score(n, quality)
+        note = f"SHORT smart-money sweep ({session_label}): " + " + ".join(parts)
+
+    if long_price_signal:
+        dom_confirms_long = dom_bull_signal
+        n = int(sweep_low_signal) + int(spike_bull_reject) + int(dom_confirms_long)
+        quality = 0.0
+        parts = []
+        if sweep_low_signal:
+            quality += min(pierce_low / sweep_atr_mult, 2.0) * 5
+            parts.append(f"sweep below {range_low:.2f} ({pierce_low:.2f}xATR) reclaimed")
+        if spike_bull_reject:
+            quality += min(bar_rng / (atr_now * spike_atr_mult), 2.0) * 5
+            parts.append("abnormal down-wick spike rejected")
+        if dom_confirms_long:
+            quality += min(abs(dom_delta) / dom_delta_threshold, 2.0) * 5
+            parts.append(f"DOM imbalance swinging bid-heavy ({dom_delta * 100:+.0f}%)")
+        s = _combo_score(n, quality)
+        if s > long_score:
+            long_score = s
+            note = f"LONG smart-money sweep ({session_label}): " + " + ".join(parts)
+
+    return {"long": long_score, "short": short_score, "note": note}
+
+
 # ----------------------------- registry + aggregation ---------------------------
 STRATEGY_REGISTRY = {
     "order_block": ("Order Block (ICT)", score_order_block),
@@ -1580,6 +2098,37 @@ STRATEGY_REGISTRY = {
     # extreme or known S/R level and snaps back with a rejection candle.
     # Needs only H1 OHLC + atr14 — no new data source required.
     "climax_reversal_sr": ("Climax Reversal at S/R ★", score_climax_reversal_sr),
+    # ---- 27th: MTR-inspired quantitative range-regime detector.
+    # Votes Long AND Short symmetrically when ER/ADX/VR/Donchian agree it's ranging.
+    "mtr_range_regime": ("MTR Range Regime (ER+ADX+VR+Donchian)", score_mtr_range_regime),
+    # ---- 28th: MTR-inspired trend-regime detector.
+    # Votes directionally when ER/ADX/Donchian confirm a trend; complement to 27th.
+    "mtr_trend_regime": ("MTR Trend Regime (ER+ADX+Donchian)", score_mtr_trend_regime),
+    # ---- 29th: user-uploaded gold swing-trading course method -- a multi-touch
+    # H4 zone (proxy for the course's Weekly/Daily key levels) plus a nested
+    # M15 double-top/double-bottom reversal confirmed by a neckline break.
+    # Needs only H4 + M15 OHLC + atr14, already present in every scan.
+    "zone_mw_reversal": ("HTF Zone + M/W Reversal ★", score_zone_mw_reversal),
+    # ---- 30th/31st: user-requested "smart money / market maker liquidity
+    # sweep" detector for super-scalping -- combines an M1 stop-hunt sweep +
+    # fast reclaim, a sudden DOM bid/ask imbalance shift, and an abnormal
+    # spike+wick rejection candle. Registered twice with different session
+    # windows in Thai/Bangkok local time (this VPS's data["now"] clock --
+    # see score_smart_money_sweep's docstring for why these are NOT broker
+    # UTC+3 times like the scalp_* strategies' defaults). Needs "m1" + "dom"
+    # in the data dict (both already present via build_market_data()).
+    "smart_money_sweep_morning": (
+        "Smart Money Sweep — Morning (Asia 07-10) ★",
+        lambda data: score_smart_money_sweep(
+            data, session_start=(7, 0), session_end=(10, 0),
+            session_label="morning/Asia"),
+    ),
+    "smart_money_sweep_night": (
+        "Smart Money Sweep — Night (US-close 02-04) ★",
+        lambda data: score_smart_money_sweep(
+            data, session_start=(2, 0), session_end=(4, 0),
+            session_label="night/US-close"),
+    ),
 }
 
 DEFAULT_VOTE_THRESHOLD = 50.0  # a strategy's score on a side must be >= this

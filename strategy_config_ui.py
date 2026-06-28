@@ -108,7 +108,8 @@ DEFAULT_CONFIG = {
         "risk_per_trade_pct": 1.0,
         "lot_step": 0.01,
         "value_per_point_per_lot": 100.0,
-        "max_concurrent_trades": 2,
+        "max_concurrent_trades": 2,  # CRITICAL: keep low (1-2) to prevent position accumulation
+        "min_trade_interval_minutes_scalping": 5,
     },
     "money_management": {
         "min_lot": 0.01,
@@ -182,7 +183,7 @@ DEFAULT_CONFIG = {
         # classics; 0.7-0.9 = useful confirmation but historically more prone
         # to lag or false signals on XAUUSD specifically. Every strategy stays
         # ENABLED by default — nothing is muted, only down-weighted — so you
-        # still see all 24 scores and can re-tune any of this yourself.
+        # still see all 31 scores and can re-tune any of this yourself.
         "strategies": {
             "order_block": {"enabled": True, "weight": 1.3},       # ICT concept, strong edge
             "supply_demand": {"enabled": True, "weight": 1.1},
@@ -215,7 +216,7 @@ DEFAULT_CONFIG = {
             # first successful background fetch. Weighted a bit above the
             # 1.0 baseline since it's the institutional/macro baseline the
             # other 23 price-action strategies don't otherwise see.
-            "macro_bias": {"enabled": True, "weight": 1.2},
+            "macro_bias": {"enabled": True, "weight": 0.6},
             # 4 scalping strategies (#21-24) — weighted per the win-rate info
             # you gave when these were added: London Sweep 55-65% WR, EMA
             # Pullback 60-70% WR (but only fires in a strong, fully-stacked
@@ -234,6 +235,23 @@ DEFAULT_CONFIG = {
             # 26th: extreme/exhausted directional move that slams into a fresh
             # extreme or known S/R level and snaps back with a rejection candle.
             "climax_reversal_sr": {"enabled": True, "weight": 1.0},
+            # 27th: MTR-ported quantitative range-regime detector (ER+ADX+VR+Donchian).
+            # Votes Long AND Short symmetrically when market is ranging; 0/0 in trend.
+            "mtr_range_regime": {"enabled": True, "weight": 0.9},
+            # 28th: MTR-ported trend-regime detector (ER+ADX+Donchian+EMA50 slope).
+            # Votes directionally when trend confirmed. Complement to mtr_range_regime.
+            "mtr_trend_regime": {"enabled": True, "weight": 0.8},
+            # 29th: from the user's uploaded gold swing-trading course --
+            # multi-touch H4 zone (proxy for Weekly/Daily key levels) plus a
+            # nested M15 double-top/double-bottom reversal confirmed by a
+            # neckline break. Weight 1.1 -- same tier as supply_demand/fair_value_gap.
+            "zone_mw_reversal": {"enabled": True, "weight": 1.1},
+            # 30th/31st: user-requested smart-money liquidity sweep detector
+            # for super-scalping (M1 stop-hunt sweep+reclaim, DOM imbalance
+            # delta, abnormal spike+wick rejection). Registered twice with
+            # different session windows (Thai/Bangkok local time).
+            "smart_money_sweep_morning": {"enabled": True, "weight": 1.0},
+            "smart_money_sweep_night": {"enabled": True, "weight": 1.0},
         },
     },
     "league": {
@@ -268,6 +286,12 @@ DEFAULT_CONFIG = {
     "process_control": {
         "kill_stale_on_start": True,
     },
+    "order_options": {
+        "use_sl":       True,
+        "use_tp":       True,
+        "tp_mode":      "strategy",
+        "tp_fixed_usd": 50.0,
+    },
 }
 
 # Display labels for the confluence strategies — the original 13 (★ = ICT/SMC
@@ -282,7 +306,7 @@ DEFAULT_CONFIG = {
 # history or FXSSI's own broker-sentiment service). PLUS #20, Macro Bias (Big
 # Data) — real macro/fundamental data (DXY, US10Y yield, COT, COMEX
 # inventory, ETF flow where available) fetched from free public sources by
-# macro_data.py, NOT price-derived like the other 19 — 20 total.
+# macro_data.py, NOT price-derived like the other 19 — 31 total.
 STRATEGY13_LABELS = {
     "order_block": "1. Order Block (ICT) ★",
     "supply_demand": "2. Supply & Demand",
@@ -310,6 +334,11 @@ STRATEGY13_LABELS = {
     "scalp_combo_sweep": "24. Scalping: EMA20+EMA50+Liquidity Sweep ★ (แนะนำที่สุด) 🩳",
     "myfxbook_sentiment": "25. Myfxbook Retail Sentiment (Community Outlook)",
     "climax_reversal_sr": "26. Climax Reversal at Support/Resistance ★",
+    "mtr_range_regime":   "27. MTR Range Regime (ER+ADX+VR+Donchian) 📐",
+    "mtr_trend_regime":   "28. MTR Trend Regime (ER+ADX+Donchian+EMA) 📈",
+    "zone_mw_reversal":   "29. HTF Zone + M/W Reversal (Course Method) ★",
+    "smart_money_sweep_morning": "30. Smart Money Sweep — Morning (Asia 07-10) ★ 🩳",
+    "smart_money_sweep_night":   "31. Smart Money Sweep — Night (US-close 02-04) ★ 🩳",
 }
 
 SESSION_INFO = {
@@ -391,7 +420,7 @@ class App(tk.Tk):
         self.tab_daily = ttk.Frame(nb)
         self.tab_hours = ScrollFrame(nb)
         self.tab_trailing = ttk.Frame(nb)
-        self.tab_risk = ttk.Frame(nb)
+        self.tab_risk = ScrollFrame(nb)
         self.tab_telegram = ttk.Frame(nb)
         self.tab_myfxbook = ttk.Frame(nb)
         self.tab_logging = ttk.Frame(nb)
@@ -416,7 +445,7 @@ class App(tk.Tk):
         self.build_daily_tab(self.tab_daily)
         self.build_trading_hours_tab(self.tab_hours.inner)
         self.build_trailing_tab(self.tab_trailing)
-        self.build_risk_tab(self.tab_risk)
+        self.build_risk_tab(self.tab_risk.inner)
         self.build_telegram_tab(self.tab_telegram)
         self.build_myfxbook_tab(self.tab_myfxbook)
         self.build_logging_tab(self.tab_logging)
@@ -446,6 +475,22 @@ class App(tk.Tk):
         self.lbl_tunnel_status.pack(side="left")
         self.lbl_backup_status = ttk.Label(row2, text="   |   Auto-Backup: ไม่ได้รัน")
         self.lbl_backup_status.pack(side="left")
+        # Quick-access risk controls — reuse vars already created by the tab builders above
+        row_risk = ttk.Frame(ctrl)
+        row_risk.pack(fill="x", padx=6, pady=(2, 0))
+        ttk.Label(row_risk, text="⚡ Quick Risk:", font=("", 9, "bold")).pack(side="left")
+        ttk.Label(row_risk, text="  Max concurrent trades:").pack(side="left")
+        ttk.Spinbox(row_risk, from_=1, to=20, width=5,
+                    textvariable=self.vars["risk.max_concurrent_trades"].str_var).pack(side="left", padx=(2, 12))
+        ttk.Label(row_risk, text="Max daily trades:").pack(side="left")
+        ttk.Spinbox(row_risk, from_=1, to=50, width=5,
+                    textvariable=self.vars["money_management.max_daily_trades"].str_var).pack(side="left", padx=(2, 12))
+        ttk.Label(row_risk, text="Daily loss limit (R):").pack(side="left")
+        ttk.Spinbox(row_risk, from_=1, to=20, width=5,
+                    textvariable=self.vars["money_management.daily_loss_limit_r"].str_var).pack(side="left", padx=(2, 4))
+        ttk.Label(row_risk, text="← กด Save Config หลังแก้ (bot reload ภายใน 30 วิ ไม่ต้อง restart)",
+                  foreground="#888").pack(side="left")
+
         row3 = ttk.Frame(ctrl)
         row3.pack(fill="x", padx=6, pady=(0, 2))
         self.reg_bool(
@@ -1277,6 +1322,34 @@ class App(tk.Tk):
         self.reg_entry(frame, s, "lot_step", "Lot step:", row=2)
         self.reg_entry(frame, s, "value_per_point_per_lot", "Value per $1 move per lot ($):", row=3)
         self.reg_entry(frame, s, "max_concurrent_trades", "Max concurrent trades:", row=4, numeric_type=int)
+        self.reg_entry(frame, s, "min_trade_interval_minutes_scalping",
+                       "Scalping Trade cooldown (นาที, แยกจาก Day Trade — default 5):", row=5, numeric_type=float)
+
+        oframe = ttk.LabelFrame(parent, text="Order Options — SL / TP ต่อออเดอร์")
+        oframe.pack(fill="x", padx=12, pady=12)
+        o = "order_options"
+        self.reg_bool(oframe, o, "use_sl",
+                      "ใช้ Stop Loss (SL) ในการเปิดออเดอร์ — แนะนำให้เปิดไว้เสมอ", row=0)
+        ttk.Label(
+            oframe,
+            text="⚠ คำเตือน: ถ้าปิด SL ออเดอร์จะไม่มีจุดตัดขาดทุนที่โบรกเกอร์เลย "
+                 "ความเสี่ยงไม่จำกัดต่อออเดอร์ — อาจถูก Margin Call หรือเสียทั้งบัญชีจากไม้เดียว "
+                 "ใช้ความระมัดระวังสูงสุด",
+            foreground="#cc0000", wraplength=640, justify="left",
+        ).grid(row=1, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 6))
+        self.reg_bool(oframe, o, "use_tp",
+                      "ใช้ Take Profit (TP) ในการเปิดออเดอร์", row=2)
+        self.reg_combo(oframe, o, "tp_mode", "วิธีกำหนด TP:",
+                       ["strategy", "fixed_usd"], row=3)
+        self.reg_entry(oframe, o, "tp_fixed_usd",
+                       "TP แบบกำหนดเอง (USD ต่อออเดอร์ — ใช้เมื่อเลือก fixed_usd):",
+                       row=4, numeric_type=float)
+        ttk.Label(
+            oframe,
+            text="tp_mode=strategy: ใช้ TP ที่คำนวณจาก ATR×R:R ตามปกติ\n"
+                 "tp_mode=fixed_usd: คำนวณราคา TP จากเป้าหมายกำไร (USD) ÷ lot size ÷ value_per_point",
+            wraplength=640, justify="left", foreground="#555",
+        ).grid(row=5, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 4))
 
         mframe = ttk.LabelFrame(parent, text="Money Management (min/max lot + daily safety limits)")
         mframe.pack(fill="x", padx=12, pady=12)

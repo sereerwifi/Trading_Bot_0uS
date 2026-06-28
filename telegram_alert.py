@@ -209,6 +209,16 @@ def format_post_news_alert(event, impact_note=None):
     return "\n".join(lines)
 
 
+def format_proxy_staleness_alert(data_key, hours_on_proxy, proxy_source_name, symbol=None):
+    lbl = symbol_normalize.display_label(symbol or "XAUUSD")
+    return (f"⚠️ <b>{lbl} — Macro data on proxy for {hours_on_proxy:.0f}h</b>\n"
+            f"<b>{data_key}</b> has been using fallback source "
+            f"<code>{proxy_source_name}</code> instead of its primary feed.\n"
+            f"macro_bias (weight 1.2, highest-weighted strategy) is scoring "
+            f"off degraded data. Primary source may be blocked (403/bot-wall).\n"
+            f"No action needed — bot keeps running. This alert fires once per episode.")
+
+
 def format_market_closed_alert(symbol, reason):
     lbl = symbol_normalize.display_label(symbol)
     return (f"⏸️ <b>{lbl} — Market Closed</b>\n"

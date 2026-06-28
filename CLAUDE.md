@@ -4,6 +4,27 @@ This file is read automatically by Claude Code whenever it starts in this
 folder. It exists so a debugging session can start immediately without
 re-explaining the bot's architecture.
 
+## SINGLE SOURCE OF TRUTH (merged 2026-06-28)
+
+This folder (`RoBotTrading man 0 V10`) is now the **only** working copy for
+this project. It was created by merging two previously-separate folders:
+`RoBotTrading man 0 USV9` (the primary copy, downloaded from the VPS,
+git-tracked against `origin/main`, with all live runtime state) and
+`RoBotTrading man 0 US` (a secondary copy that had fallen behind — confirmed
+via diff to contain zero unique files; every overlapping file in it was a
+strict subset of the USV9 version, missing strategies #27-31,
+`symbol_normalize.py`, `bot_monitor.py`, `backtest_sim.py`,
+`verify_data_sources.py`, and more). USV9's content was copied here in full
+(including `.git` history, `backups/`, and live JSON state files);
+`__pycache__`, `.DS_Store`, and one leftover `testwrite.tmp` were dropped as
+non-source artifacts.
+
+**Going forward**: make all changes here, in this single folder. The old
+`RoBotTrading man 0 US` and `RoBotTrading man 0 USV9` folders are now
+redundant — treat them as archived/historical, not as sync targets. The
+sync target for the live VPS bot is now this folder (see the VPS-sync hard
+rule below, which replaces the old "mirror back to US" rule).
+
 ## What this is
 
 An MT5 (MetaTrader 5) algorithmic trading bot for XAUUSD (gold), written in
@@ -79,7 +100,7 @@ panel (shows each group's bias + candidate even when nothing fires).
 5. Regenerate the dashboard (`python generate_dashboard.py`) if you want a
    fresh `dashboard.html` reflecting the very latest JSON state.
 
-## Strategies (26 total)
+## Strategies (31 total)
 
 24 price/order-flow/macro strategies, a 25th: **Myfxbook Retail
 Sentiment** (`score_myfxbook_sentiment` in `strategies.py`, fetched by
@@ -90,13 +111,73 @@ Myfxbook credentials in `strategy_config.json` under `"myfxbook"` (or the UI's
 fades the crowd rather than following it. **Weight (0.8) kept below
 `macro_bias` (1.2)** — do not raise without user approval.
 
-And a 26th: **Climax Reversal at S/R** (`score_climax_reversal_sr` in
+A 26th: **Climax Reversal at S/R** (`score_climax_reversal_sr` in
 `strategies.py`, key `climax_reversal_sr`, weight `1.0`). User-requested
 pattern: a strong/extreme directional move (net move over the last 8 H1
 bars >= 2.5x ATR14) that arrives at a fresh price extreme or a known swing
 S/R level, then prints a rejection candle (pin bar or engulfing) — votes
 the instant that reversal bar closes. Needs only H1 OHLC + atr14 (already
 present every scan), no new data wiring required.
+
+A 27th and 28th: **MTR Range Regime** (`score_mtr_range_regime`, key
+`mtr_range_regime`, weight `0.9`) and **MTR Trend Regime**
+(`score_mtr_trend_regime`, key `mtr_trend_regime`, weight `0.8`) — MTR-style
+quantitative regime detectors using Efficiency Ratio, Wilder's ADX, a
+variance-ratio test, and Donchian position (`_efficiency_ratio()`,
+`_wilder_adx()`, `_variance_ratio()` helpers in `strategies.py`). Range
+Regime votes Long AND Short symmetrically when the market is ranging; Trend
+Regime votes directionally when a trend is confirmed — the two are
+complements. Both are already registered in `strategies.py` and wired into
+`strategy_config_ui.py`'s `DEFAULT_CONFIG`/`STRATEGY13_LABELS`; if
+`strategy_config.json` on a given copy predates them, the UI's `_deep_merge`
+backfills the missing keys on next load/save.
+
+And a 29th: **HTF Zone + M/W Reversal** (`score_zone_mw_reversal` in
+`strategies.py`, key `zone_mw_reversal`, weight `1.1`) — derived directly
+from the user's uploaded gold swing-trading course material ("GOLD
+Fundamentals", "Gold Live Trade and Analysis", "...Profits"). Finds a
+multi-touch H4 zone (>= 2 swing highs/lows within `zone_tol_atr` x ATR(H4)
+of each other — H4 stands in for the course's Weekly/Daily key-level step,
+since this bot has no D1/W1 data wired in), then looks on M15 for a
+double-top/double-bottom ("M/W") pattern whose second peak/trough sits at
+that zone, voting the instant the latest closed M15 bar breaks the
+pattern's neckline by `neckline_break_atr` x ATR(M15). Needs only H4 + M15
+OHLC + atr14, both already present every scan — no new data wiring beyond
+the registry entry + weight/label defaults.
+
+A 30th and 31st: **Smart Money Sweep — Morning / Night**
+(`score_smart_money_sweep` in `strategies.py`, keys
+`smart_money_sweep_morning` and `smart_money_sweep_night`, weight `1.0`
+each) — user-requested "เจ้ามือ liquidity sweep" detector for super-scalping,
+combining 3 independent signals scored higher the more of them fire
+together: (1) an M1 stop-hunt sweep of the recently-built range high/low
+with a fast reclaim within a few candles — the M1-speed cousin of
+`score_liquidity_sweep`, which only runs on H1; (2) a sudden shift in the
+live DOM bid/ask imbalance across the last few scan ticks (new
+`_DOM_IMBALANCE_HISTORY` module state, since `score_order_flow_dom` only
+ever looks at one snapshot in isolation) — this signal never votes alone,
+only adds conviction on top of (1) or (3); (3) an abnormal single-candle
+M1 spike (>= 2.5x ATR) with a one-sided wick that closes back, the
+fast-timeframe cousin of `score_climax_reversal_sr` minus its 8-bar
+lead-in requirement. Registered twice with different session windows:
+morning ~07:00-10:00 and night ~02:00-04:00.
+
+**Timezone gotcha specific to these two strategies**: their session
+windows are plain **Thai/Bangkok local hours**, NOT broker UTC+3 like the
+`scalp_london_sweep`/`scalp_ny_orb` defaults. This VPS's
+`build_market_data()` sets `data["now"] = datetime.now()`, and this
+machine's clock is documented elsewhere in this file (and in
+`xauusd_mt5_strategy.py`'s module docstring, "Trading-hours filter"
+section) as being set to **Thailand time (UTC+7)** — so `data["now"]` is
+already Bangkok wall-clock time, not broker time. The existing
+`scalp_*` strategies' docstrings describe their defaults as broker-time
+windows but compare them directly against this same Thai-time
+`data["now"]` with no conversion — this looks like a **pre-existing
+inconsistency** between those docstrings and actual runtime behavior. It
+was flagged, not fixed, when `score_smart_money_sweep` was added (fixing
+it would change when the older scalp strategies fire, which wasn't asked
+for). If "why didn't my scalp strategy fire at the time I expected"
+comes up, check this first.
 
 ## Hard rules (apply even when debugging)
 
@@ -109,7 +190,10 @@ present every scan), no new data wiring required.
   `DAILY_FILTER_ENABLED`, `LOGIC_GROUP_SELECTION`,
   `LOGIC_GROUPS_APPLY_DAILY_FILTER`) over silently deleting old behavior, so
   the user can switch back without another code change.
-- This project also exists as a local working copy at
-  `RoBotTrading man 0 US` (no `V9` suffix) — changes made here on the VPS
-  copy (`...USV9`) should eventually be mirrored back if the user wants them
-  kept in sync; flag this rather than assuming it's already handled.
+- This folder is the single local working copy (see "SINGLE SOURCE OF
+  TRUTH" note at the top). The live bot itself still runs on a separate
+  VPS — changes made here need to be synced TO the VPS (not the reverse)
+  before they take effect live. Use the existing `VPS_SYNC_*_PROMPT.md`
+  files in this folder as the template for writing a new sync prompt
+  whenever a change here needs to reach the VPS; don't assume a local edit
+  is already live just because it's been made here.
