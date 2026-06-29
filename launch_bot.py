@@ -26,6 +26,7 @@ TARGETS = [
     os.path.join(THIS_DIR, "generate_dashboard.py"),
     os.path.join(THIS_DIR, "dashboard_server.py"),
     os.path.join(THIS_DIR, "backup_restore.py"),
+    os.path.join(THIS_DIR, "strategy_config_ui.py"),
 ]
 CLOUDFLARED_EXE  = os.path.join(CF_DIR, "cloudflared.exe")
 TUNNEL_NAME      = "sereewifi-dashboard"
