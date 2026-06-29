@@ -89,6 +89,7 @@ def collect_mt5_snapshot():
         "max_daily_trades": ea.MAX_DAILY_TRADES,
         "max_concurrent_trades": ea.MAX_CONCURRENT_TRADES,
         "symbol": ea.SYMBOL,
+        "perf": None,
     }
 
     # Silence the EA's logger during dashboard reads — it shares the bot's
@@ -133,6 +134,8 @@ def collect_mt5_snapshot():
         snapshot["today_trade_count"] = safe_call(ea.count_today_new_trades, 0)
         snapshot["consecutive_losses"] = safe_call(ea.count_consecutive_losses, 0)
 
+        snapshot["perf"] = _collect_perf_stats(info)
+
         if info is not None:
             snapshot["dd_blocked"], snapshot["dd_reason"] = ea.check_drawdown_breaker(info)
             snapshot["loss_blocked"], snapshot["loss_reason"] = ea.check_daily_loss_limit(info.balance)
@@ -146,6 +149,94 @@ def collect_mt5_snapshot():
         mt5.shutdown()
 
     return snapshot
+
+
+def _collect_perf_stats(info):
+    """Queries MT5 deal history (called while MT5 is still open) to compute
+    daily / weekly / monthly realised P&L, win rates, and max drawdown.
+    Returns a dict; numeric fields are None when no data is available."""
+    stats = {
+        "daily_pnl": None,   "daily_trades": 0,   "daily_wins": 0,
+        "weekly_pnl": None,  "weekly_trades": 0,  "weekly_wins": 0,
+        "monthly_pnl": None, "monthly_trades": 0, "monthly_wins": 0,
+        "max_dd_usd": None,  "max_dd_pct": None,
+        "total_trades": 0,   "overall_winrate": None,
+    }
+    try:
+        now   = datetime.now()
+        today = now.date()
+        week_start  = today - timedelta(days=today.weekday())   # Monday
+        month_start = today.replace(day=1)
+        hist_start  = today - timedelta(days=120)               # 4-month window for drawdown
+
+        dt_today   = datetime.combine(today,       datetime.min.time())
+        dt_week    = datetime.combine(week_start,  datetime.min.time())
+        dt_month   = datetime.combine(month_start, datetime.min.time())
+        dt_history = datetime.combine(hist_start,  datetime.min.time())
+        dt_future  = now + timedelta(days=1)
+
+        raw = mt5.history_deals_get(dt_history, dt_future)
+        if not raw:
+            return stats
+
+        # DEAL_ENTRY_OUT=1 (exit of a position), DEAL_ENTRY_INOUT=3 (reverse)
+        all_deals = []
+        for d in raw:
+            if d.magic != ea.MAGIC_NUMBER:
+                continue
+            if d.entry not in (1, 3):
+                continue
+            pnl = d.profit + d.swap + d.commission
+            all_deals.append((datetime.fromtimestamp(d.time), pnl))
+
+        all_deals.sort(key=lambda x: x[0])
+
+        daily_pnl = weekly_pnl = monthly_pnl = 0.0
+        d_t = d_w = d_m = d_tw = d_ww = d_mw = 0
+        total_wins = 0
+
+        for deal_time, pnl in all_deals:
+            stats["total_trades"] += 1
+            if pnl > 0:
+                total_wins += 1
+            if deal_time >= dt_month:
+                monthly_pnl += pnl; d_m += 1
+                if pnl > 0: d_mw += 1
+            if deal_time >= dt_week:
+                weekly_pnl += pnl; d_w += 1
+                if pnl > 0: d_ww += 1
+            if deal_time >= dt_today:
+                daily_pnl += pnl; d_t += 1
+                if pnl > 0: d_tw += 1
+
+        stats.update({
+            "daily_pnl":    daily_pnl,   "daily_trades":   d_t, "daily_wins":   d_tw,
+            "weekly_pnl":   weekly_pnl,  "weekly_trades":  d_w, "weekly_wins":  d_ww,
+            "monthly_pnl":  monthly_pnl, "monthly_trades": d_m, "monthly_wins": d_mw,
+            "overall_winrate": (total_wins / stats["total_trades"] * 100)
+                               if stats["total_trades"] else None,
+        })
+
+        # Max drawdown over the history window
+        if all_deals and info is not None:
+            cumulative = sum(p for _, p in all_deals)
+            running    = info.balance - cumulative
+            peak       = running
+            max_dd     = 0.0
+            for _, pnl in all_deals:
+                running += pnl
+                if running > peak:
+                    peak = running
+                dd = peak - running
+                if dd > max_dd:
+                    max_dd = dd
+            stats["max_dd_usd"] = max_dd
+            if peak > 0:
+                stats["max_dd_pct"] = (max_dd / peak) * 100
+
+    except Exception:
+        pass
+    return stats
 
 
 def collect_confluence_snapshot():
@@ -598,10 +689,10 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
         macro_cards = (
             chk("DXY", 30, dxy_ok, dxy_detail)
             + chk("US 10Y Yield", 25, yld_ok, yld_detail)
-            + chk("Fed Expectation", 20, fed_ok, fed_detail)
+            + chk("Fed Expectation", 15, fed_ok, fed_detail)
             + chk("ETF Flow (GLD)", 10, etf_ok, etf_detail)
             + chk("COT Net Long", 10, cot_ok, cot_detail)
-            + chk("COMEX Registered", 5, comex_ok, comex_detail)
+            + chk("COMEX Registered", 10, comex_ok, comex_detail)
         )
 
         macro_strategy = (conf_snap.get("scores") or {}).get("macro_bias")
@@ -635,6 +726,39 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
     else:
         macro_cards = '<div class="card card-wide"><div class="card-label">Macro Bias (Big Data)</div><div class="card-value neg">ยังไม่มีข้อมูล</div></div>'
         macro_note = '<div class="msg" style="margin-top:8px;font-size:12.5px;color:var(--text-dim)">รอ EA ดึงข้อมูลรอบแรก (macro_data.py) แล้วรันแดชบอร์ดนี้ใหม่</div>'
+
+    # ---- performance statistics ----
+    perf = snap.get("perf")
+
+    def _perf_card(label, pnl, trades, wins):
+        if pnl is None:
+            return (f'<div class="card"><div class="card-label">{label}</div>'
+                    f'<div class="card-value" style="font-size:15px;color:var(--text-dim)">N/A</div></div>')
+        pnl_cls = "pos" if pnl >= 0 else "neg"
+        wr = f" &middot; {wins}/{trades} ({wins/trades*100:.0f}% WR)" if trades else ""
+        return (f'<div class="card"><div class="card-label">{label}</div>'
+                f'<div class="card-value {pnl_cls}" style="font-size:20px">{fmt_money(pnl)}</div>'
+                f'<div class="msg" style="font-size:12px;margin-top:4px">{trades} trades{wr}</div></div>')
+
+    if perf:
+        dd_usd = perf.get("max_dd_usd")
+        dd_pct = perf.get("max_dd_pct")
+        dd_val = f'{fmt_money(dd_usd)} ({dd_pct:.1f}%)' if dd_usd is not None else "N/A"
+        dd_cls = "neg" if (dd_usd or 0) > 0 else ""
+        wr_all = perf.get("overall_winrate")
+        wr_str = f"{wr_all:.0f}%" if wr_all is not None else "-"
+        perf_cards = (
+            _perf_card("Daily P&amp;L",   perf.get("daily_pnl"),   perf.get("daily_trades",0),   perf.get("daily_wins",0))
+            + _perf_card("Weekly P&amp;L",  perf.get("weekly_pnl"),  perf.get("weekly_trades",0),  perf.get("weekly_wins",0))
+            + _perf_card("Monthly P&amp;L", perf.get("monthly_pnl"), perf.get("monthly_trades",0), perf.get("monthly_wins",0))
+            + f'<div class="card"><div class="card-label">Max Drawdown (120d)</div>'
+              f'<div class="card-value {dd_cls}" style="font-size:18px">{dd_val}</div></div>'
+            + f'<div class="card"><div class="card-label">Overall Win Rate (120d)</div>'
+              f'<div class="card-value" style="font-size:20px">{wr_str}</div>'
+              f'<div class="msg" style="font-size:12px;margin-top:4px">{perf.get("total_trades",0)} closed trades</div></div>'
+        )
+    else:
+        perf_cards = '<div class="card card-wide"><div class="card-label">Performance</div><div class="card-value" style="color:var(--text-dim)">MT5 not connected</div></div>'
 
     # ---- account cards ----
     if snap["mt5_connected"] and info is not None:
@@ -864,6 +988,12 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
 <section>
   <h2>Account Snapshot</h2>
   <div class="grid-cards">{account_cards}</div>
+</section>
+
+<section>
+  <h2>Performance Statistics</h2>
+  <div class="grid-cards">{perf_cards}</div>
+  <div class="msg" style="margin-top:8px;font-size:12.5px;color:var(--text-dim)">Realised P&amp;L from EA trades only (magic={esc(str(ea.MAGIC_NUMBER))}) &middot; Daily = today Thai time &middot; Weekly = Mon–Sun &middot; Monthly = calendar month &middot; Max Drawdown = peak-to-trough over 120-day window</div>
 </section>
 
 <section>
