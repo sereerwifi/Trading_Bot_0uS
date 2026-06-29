@@ -10,13 +10,18 @@ time.sleep(60)
 user32  = ctypes.windll.user32
 SW_MINIMIZE = 6
 
-# Collect PIDs of MT5 terminal processes to exclude
-MT5_EXE_NAMES = {"terminal64.exe", "terminal.exe"}
-mt5_pids = set()
-for proc in psutil.process_iter(["pid", "name"]):
+# Collect PIDs to exclude from minimization: MT5 terminal + config UI
+EXCLUDE_EXE_NAMES = {"terminal64.exe", "terminal.exe"}
+EXCLUDE_SCRIPT_FRAGMENTS = {"strategy_config_ui.py"}
+exclude_pids = set()
+for proc in psutil.process_iter(["pid", "name", "cmdline"]):
     try:
-        if proc.info["name"] and proc.info["name"].lower() in MT5_EXE_NAMES:
-            mt5_pids.add(proc.info["pid"])
+        name = (proc.info["name"] or "").lower()
+        if name in EXCLUDE_EXE_NAMES:
+            exclude_pids.add(proc.info["pid"])
+        cmd = " ".join(proc.info["cmdline"] or [])
+        if any(frag in cmd for frag in EXCLUDE_SCRIPT_FRAGMENTS):
+            exclude_pids.add(proc.info["pid"])
     except Exception:
         pass
 
@@ -28,8 +33,8 @@ def _minimize_callback(hwnd, _):
     # Get the PID that owns this window
     pid = ctypes.wintypes.DWORD(0)
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-    if pid.value in mt5_pids:
-        return True  # skip MT5 windows
+    if pid.value in exclude_pids:
+        return True  # skip MT5 and config UI windows
     user32.ShowWindow(hwnd, SW_MINIMIZE)
     return True
 

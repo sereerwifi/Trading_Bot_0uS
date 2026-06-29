@@ -306,7 +306,11 @@ DAY_TRADE_STRATEGIES = [
     "vwap_rejection", "rsi_divergence", "atr_donchian_breakout", "fair_value_gap",
     "fibonacci", "multi_tf_align", "news_fade",
     "ema_cross", "liquidity_sweep", "bos_choch", "order_block",
-    "climax_reversal_sr", "zone_mw_reversal", "mtr_trend_regime", "mtr_range_regime",
+    "climax_reversal_sr", "zone_mw_reversal", "mtr_trend_regime",
+    # mtr_range_regime excluded: returns symmetric long=short scores so its
+    # direction is 100% inherited from the bias filter, not from price-action
+    # analysis — caused late entries at price extremes. Still scores every scan
+    # and contributes to confluence, but never owns the entry.
 ]
 
 # Group 2: "Scalping Trade" — same two-step design, smaller/faster bias

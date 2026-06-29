@@ -1,6 +1,6 @@
-"""Full bot launch script — kills any stale processes first, then starts
-EA, dashboard --watch, web server, cloudflared tunnel, backup watcher,
-and auto-minimize (minimizes all windows 60s after launch).
+"""Bot launcher — kills any stale bot processes, then opens the config UI.
+Use the UI's '▶ Start Bot' button to start the EA and all supporting
+processes. The bot will NOT start automatically on launch.
 
 Run via start_bot.bat or: python launch_bot.py
 """
@@ -21,8 +21,6 @@ TARGETS = [
 ]
 CLOUDFLARED_EXE  = os.path.join(CF_DIR, "cloudflared.exe")
 TUNNEL_NAME      = "sereewifi-dashboard"
-DASHBOARD_PORT   = 8787
-BACKUP_DIR       = os.path.join(THIS_DIR, "backups")
 
 
 def kill_stale():
@@ -47,22 +45,10 @@ def kill_stale():
         time.sleep(2)
 
 
-def launch(args, cwd=THIS_DIR, console=True):
-    flags = subprocess.CREATE_NEW_CONSOLE if console else 0x08000000  # CREATE_NO_WINDOW
-    return subprocess.Popen(args, cwd=cwd, creationflags=flags)
-
-
 if __name__ == "__main__":
-    print("Killing stale processes...")
+    print("Killing stale bot processes...")
     kill_stale()
 
-    print("Starting bot processes...")
-    launch([sys.executable, os.path.join(THIS_DIR, "xauusd_mt5_strategy.py")])
-    launch([sys.executable, os.path.join(THIS_DIR, "generate_dashboard.py"), "--watch", "--interval", "60"])
-    launch([sys.executable, os.path.join(THIS_DIR, "dashboard_server.py"), "--port", str(DASHBOARD_PORT)])
-    launch([CLOUDFLARED_EXE, "tunnel", "run", TUNNEL_NAME], cwd=CF_DIR)
-    launch([sys.executable, os.path.join(THIS_DIR, "backup_restore.py"),
-            "watch", "--out", BACKUP_DIR, "--interval-hours", "6", "--keep", "28"])
-    launch([sys.executable, os.path.join(THIS_DIR, "auto_minimize.py")], console=False)
-
-    print("All processes launched. Windows will minimize in 60 seconds.")
+    print("Opening config UI — use '▶ Start Bot' to start the EA.")
+    ui_path = os.path.join(THIS_DIR, "strategy_config_ui.py")
+    subprocess.Popen([sys.executable, ui_path], cwd=THIS_DIR)
