@@ -898,6 +898,7 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>XAUUSD EA Dashboard</title>
+<meta http-equiv="refresh" content="60">
 <style>
   :root {{
     --bg: #0f1420;
@@ -984,7 +985,7 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
 <header>
   <div>
     <h1>XAUUSD MT5 EA — Monitoring Dashboard <span class="symbol-tag">{esc(symbol_normalize.display_label(snap['symbol']))}</span></h1>
-    <div class="sub">Generated {generated_at} &middot; ข้อมูล live จาก MT5 ขณะรันสคริปต์นี้ — รันใหม่เพื่ออัปเดต</div>
+    <div class="sub">Generated {generated_at} &middot; auto-refresh in <span id="countdown">60</span>s</div>
   </div>
 </header>
 
@@ -1130,7 +1131,12 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
   </div>
 </section>
 
-<footer>xauusd_mt5_strategy.py &middot; generate_dashboard.py &middot; เปิดไฟล์นี้ใหม่ในเบราว์เซอร์ทุกครั้งหลังรันสคริปต์เพื่อดูข้อมูลล่าสุด</footer>
+<footer>xauusd_mt5_strategy.py &middot; generate_dashboard.py &middot; auto-refreshes every 60s</footer>
+<script>
+  var sec = 60;
+  var el = document.getElementById('countdown');
+  setInterval(function() {{ sec--; if (sec < 0) sec = 60; if (el) el.textContent = sec; }}, 1000);
+</script>
 </body>
 </html>
 """
