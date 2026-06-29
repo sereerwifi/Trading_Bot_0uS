@@ -578,7 +578,7 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
     else:
         cal_rows = "<tr><td colspan='8' class='empty'>ยังไม่มีข้อมูล economic calendar (macro_data.py) — ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต/ไฟร์วอลล์</td></tr>"
 
-    # ---- confluence multi-strategy (32) scores ----
+    # ---- confluence multi-strategy (33) scores ----
     if conf_snap:
         direction_taken = conf_snap.get("direction_taken")
         conf_cards = f"""
@@ -1009,7 +1009,7 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
 </section>
 
 <section>
-  <h2>Multi-Strategy Confluence (32) — Live Scores</h2>
+  <h2>Multi-Strategy Confluence (33) — Live Scores</h2>
   <div class="grid-cards">{conf_cards}</div>
   <div class="panel-table" style="margin-top:14px">
     <table>

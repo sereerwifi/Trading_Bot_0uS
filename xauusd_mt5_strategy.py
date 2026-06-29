@@ -88,6 +88,7 @@ import telegram_alert
 import macro_data
 import symbol_normalize
 import fib_confluence
+import harmonic_patterns
 
 # ----------------------------- CONFIG ---------------------------------
 SYMBOL = "GOLD"                # broker symbol name for gold spot — XM uses "GOLD",
@@ -360,11 +361,12 @@ _RECOMMENDED_STRATEGY_WEIGHTS = {
     "smart_money_sweep_morning": 1.0,  # 30th -- M1 sweep+reclaim / DOM delta / spike-wick, Asia 07-10 BKK
     "smart_money_sweep_night": 1.0,  # 31st -- same logic, US-close window 02-04 BKK
     "fib_confluence_sr": 1.2,       # 32nd -- Fibonacci Confluence S/R (Major+Minor Swing)
+    "harmonic_patterns": 1.3,       # 33rd -- XABCD harmonic pattern PRZ + Fib-confluence cross-check + rejection candle
     "mtr_range_regime": 0.9,  # 27th -- MTR quantitative range-regime detector
     "mtr_trend_regime": 0.8,  # 28th -- MTR quantitative trend-regime detector
 }
 STRATEGY_WEIGHTS = {k: _RECOMMENDED_STRATEGY_WEIGHTS.get(k, 1.0) for k in strategies.STRATEGY_REGISTRY}
-# Which of the (now 32) confluence strategies are turned on at all (a disabled strategy is
+# Which of the (now 33) confluence strategies are turned on at all (a disabled strategy is
 # excluded entirely — not scored, not displayed as voting).
 CONFLUENCE_ENABLED_STRATEGIES = set(strategies.STRATEGY_REGISTRY.keys())
 # Generic SL/TP construction for a confluence-triggered entry (it isn't tied
@@ -1882,6 +1884,22 @@ def get_fib_confluence_safe(data):
         return None
 
 
+def get_harmonic_patterns_safe(data):
+    """Wraps harmonic_patterns.compute_harmonic_patterns() so a problem in
+    the XABCD harmonic-pattern engine can never break a scan -- same
+    try/except pattern as get_fib_confluence_safe() above. Must run AFTER
+    data["fib_confluence"] has already been set (see build_market_data()
+    below) because compute_harmonic_patterns() cross-checks each pattern's
+    PRZ against the fib_confluence snapshot. On any error this returns None
+    and score_harmonic_patterns() treats that exactly like
+    macro_bias/fib_confluence-unsupported: a graceful 0/0."""
+    try:
+        return harmonic_patterns.compute_harmonic_patterns(data)
+    except Exception:
+        logger.exception("harmonic_patterns.compute_harmonic_patterns() failed — harmonic_patterns strategy will score 0/0 this scan.")
+        return None
+
+
 def _mtr_is_danger(data):
     """MTR-inspired danger gate: blocks new entries when H1 ATR is spiking
     (> 1.5× 50-bar baseline). Runs from already-fetched market data so there
@@ -1928,6 +1946,7 @@ def build_market_data():
             "now": datetime.now(), "dom": dom, "macro": macro,
             "myfxbook_contrarian": MYFXBOOK_CONTRARIAN}
     data["fib_confluence"] = get_fib_confluence_safe(data)
+    data["harmonic"] = get_harmonic_patterns_safe(data)
     return data
 
 

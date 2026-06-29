@@ -100,7 +100,7 @@ panel (shows each group's bias + candidate even when nothing fires).
 5. Regenerate the dashboard (`python generate_dashboard.py`) if you want a
    fresh `dashboard.html` reflecting the very latest JSON state.
 
-## Strategies (32 total)
+## Strategies (33 total)
 
 24 price/order-flow/macro strategies, a 25th: **Myfxbook Retail
 Sentiment** (`score_myfxbook_sentiment` in `strategies.py`, fetched by
@@ -196,6 +196,33 @@ swing leg + zone set to `fib_confluence_history.db` (SQLite, audit trail) and pe
 OHLC bars to `price_bars` table for backtesting (mirrors `macro_data_history.db`
 rationale). Uses only H4 + H1 OHLC + indicators already present every scan — no new
 MT5 data wiring required.
+
+And a 33rd: **Harmonic Patterns (XABCD)** (`score_harmonic_patterns` in
+`strategies.py`, key `harmonic_patterns`, weight `1.3`). Built from the
+user's uploaded `Harmonic Patterns.docx`, with the explicit requirement to
+combine it with the existing Fibonacci Confluence S/R strategy (#32) for a
+more accurate signal. New standalone module, `harmonic_patterns.py` (only
+numpy/pandas/stdlib):
+  - **Swing detection**: ATR-based zigzag (`_zigzag_points()`) finds the
+    last 4 confirmed alternating high/low pivots on H1 and labels them
+    X->A->B->C chronologically.
+  - **6 classic patterns**: Gartley, Bat, Butterfly, Crab, Deep Crab
+    (ratio-band matching on AB/XA, BC/AB, CD/BC against each pattern's
+    textbook Fibonacci ratios with `_RATIO_TOL` tolerance), and Cypher
+    (separate code path — its CD ratio retraces XC, not BC).
+  - **PRZ projection**: each match projects point D two independent ways
+    (from XD ratio and from CD extension of BC) and scores higher the more
+    tightly those two projections converge — the doc's "PRZ convergence."
+  - **Fib cross-check**: each PRZ is checked against `data["fib_confluence"]`
+    (strategy #32); alignment adds a 15-point `confluence_score` bonus and
+    sets `fib_aligned=True`.
+  - **Entry trigger**: only votes once price is at the PRZ AND a rejection
+    candle prints there (pin bar or engulfing).
+  - **New local DB**: `harmonic_patterns_history.db`, one
+    `harmonic_pattern_history` row per scan, best-effort/never-raises.
+  - Reads `data["harmonic"]` pre-computed by `get_harmonic_patterns_safe()`
+    in `xauusd_mt5_strategy.py` — must run after `data["fib_confluence"]`
+    is set (order enforced in `build_market_data()`).
 
 ## Hard rules (apply even when debugging)
 

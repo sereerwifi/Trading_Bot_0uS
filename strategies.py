@@ -2114,6 +2114,82 @@ def score_fib_confluence_sr(data):
             "note": note}
 
 
+def score_harmonic_patterns(data, proximity_atr=0.5):
+    """33rd strategy -- Harmonic Patterns (XABCD) ★. Ported in from the new
+    harmonic_patterns.py module (Gartley/Bat/Butterfly/Crab/Deep Crab/Cypher
+    XABCD pattern detection + PRZ projection -- see that module's docstring
+    for the full ratio tables and PRZ math). Reads data["harmonic"] (built
+    once per scan by get_harmonic_patterns_safe() in
+    xauusd_mt5_strategy.py) and only votes once price is at the
+    best-matched pattern's PRZ AND prints a rejection candle there.
+    Cross-checks each PRZ against data["fib_confluence"] (the 32nd
+    strategy) for an extra confluence bonus -- this is the "combine with
+    the existing Fibonacci strategy" behavior the user asked for. Scores
+    0/0 gracefully if the snapshot is missing/errored or no pattern is
+    currently near price."""
+    snap = data.get("harmonic")
+    if not snap or snap.get("error"):
+        reason = snap.get("error") if snap else "harmonic snapshot unavailable"
+        return {"long": 0.0, "short": 0.0, "note": f"harmonic patterns: {reason}"}
+
+    df = data.get(snap.get("timeframe", "h1"))
+    if df is None or len(df) < 3:
+        return {"long": 0.0, "short": 0.0, "note": "insufficient data for entry-candle check"}
+
+    atr_now = snap.get("atr_now")
+    if not atr_now or pd.isna(atr_now):
+        atr_now = float((df["high"] - df["low"]).tail(20).mean())
+    atr_now = max(float(atr_now), 1e-6)
+
+    matches = [m for m in (snap.get("matches") or [])
+               if abs(df["low" if snap.get("direction") == "bullish" else "high"].iloc[-1] - m["prz_price"]) <= atr_now * proximity_atr
+               or abs(df["close"].iloc[-1] - m["prz_price"]) <= atr_now * proximity_atr]
+    if not matches:
+        return {"long": 0.0, "short": 0.0, "note": "no harmonic PRZ within range of current price"}
+
+    best = max(matches, key=lambda m: m["confluence_score"])
+
+    last, prev = df.iloc[-1], df.iloc[-2]
+    rng = max(last["high"] - last["low"], 1e-6)
+    body = abs(last["close"] - last["open"])
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+    upper_wick = last["high"] - max(last["open"], last["close"])
+    prev_body_low = min(prev["open"], prev["close"])
+    prev_body_high = max(prev["open"], prev["close"])
+    cur_bullish = last["close"] > last["open"]
+    cur_bearish = last["close"] < last["open"]
+    prev_bearish = prev["close"] < prev["open"]
+    prev_bullish = prev["close"] > prev["open"]
+
+    long_score = short_score = 0.0
+    fib_note = " (Fib-confluence aligned)" if best.get("fib_aligned") else ""
+    base_note = (f"{best['pattern']} PRZ {best['prz_price']:.2f} "
+                 f"({best['n_confirm']} ratio confirm., score {best['confluence_score']:.0f}){fib_note}")
+
+    if snap.get("direction") == "bullish":
+        is_pin = lower_wick >= rng * 0.5 and body <= rng * 0.4
+        is_engulf = cur_bullish and prev_bearish and last["open"] <= prev_body_low and last["close"] >= prev_body_high
+        if is_pin or is_engulf:
+            shape = "bullish pin bar" if is_pin else "bullish engulfing"
+            quality = (lower_wick / rng) if is_pin else (body / rng)
+            long_score = _clip(best["confluence_score"] * 0.6 + quality * 30)
+            note = f"{shape} at {base_note}"
+        else:
+            note = f"price at {base_note} but no rejection candle yet"
+    else:
+        is_pin = upper_wick >= rng * 0.5 and body <= rng * 0.4
+        is_engulf = cur_bearish and prev_bullish and last["open"] >= prev_body_high and last["close"] <= prev_body_low
+        if is_pin or is_engulf:
+            shape = "bearish pin bar" if is_pin else "bearish engulfing"
+            quality = (upper_wick / rng) if is_pin else (body / rng)
+            short_score = _clip(best["confluence_score"] * 0.6 + quality * 30)
+            note = f"{shape} at {base_note}"
+        else:
+            note = f"price at {base_note} but no rejection candle yet"
+
+    return {"long": long_score, "short": short_score, "note": note}
+
+
 # ----------------------------- registry + aggregation ---------------------------
 STRATEGY_REGISTRY = {
     "order_block": ("Order Block (ICT)", score_order_block),
@@ -2202,6 +2278,13 @@ STRATEGY_REGISTRY = {
         "Fibonacci Confluence S/R (Major+Minor Swing) ★",
         score_fib_confluence_sr,
     ),
+    # ---- 33rd: Harmonic Patterns (XABCD) ★. Reads data["harmonic"] (built
+    # once per scan by get_harmonic_patterns_safe() in
+    # xauusd_mt5_strategy.py). Only votes once price is at the best-matched
+    # pattern's PRZ AND prints a rejection candle there. Cross-checks each
+    # PRZ against data["fib_confluence"] (the 32nd strategy) for an extra
+    # confluence bonus.
+    "harmonic_patterns": ("Harmonic Patterns (XABCD) ★", score_harmonic_patterns),
 }
 
 DEFAULT_VOTE_THRESHOLD = 50.0  # a strategy's score on a side must be >= this

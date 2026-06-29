@@ -253,6 +253,7 @@ DEFAULT_CONFIG = {
             "smart_money_sweep_morning": {"enabled": True, "weight": 1.0},
             "smart_money_sweep_night": {"enabled": True, "weight": 1.0},
             "fib_confluence_sr": {"enabled": True, "weight": 1.2},
+            "harmonic_patterns": {"enabled": True, "weight": 1.3},
         },
     },
     "league": {
@@ -341,6 +342,7 @@ STRATEGY13_LABELS = {
     "smart_money_sweep_morning": "30. Smart Money Sweep — Morning (Asia 07-10) ★ 🩳",
     "smart_money_sweep_night":   "31. Smart Money Sweep — Night (US-close 02-04) ★ 🩳",
     "fib_confluence_sr":         "32. Fibonacci Confluence S/R (Major+Minor Swing) ★",
+    "harmonic_patterns":         "33. Harmonic Patterns (XABCD: Gartley/Bat/Butterfly/Crab/Cypher) ★",
 }
 
 SESSION_INFO = {
