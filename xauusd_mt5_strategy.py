@@ -87,6 +87,7 @@ import strategy_simulator
 import telegram_alert
 import macro_data
 import symbol_normalize
+import fib_confluence
 
 # ----------------------------- CONFIG ---------------------------------
 SYMBOL = "GOLD"                # broker symbol name for gold spot — XM uses "GOLD",
@@ -358,11 +359,12 @@ _RECOMMENDED_STRATEGY_WEIGHTS = {
     "zone_mw_reversal": 1.1,  # 29th -- multi-touch H4 zone + M15 double top/bottom + neckline break
     "smart_money_sweep_morning": 1.0,  # 30th -- M1 sweep+reclaim / DOM delta / spike-wick, Asia 07-10 BKK
     "smart_money_sweep_night": 1.0,  # 31st -- same logic, US-close window 02-04 BKK
+    "fib_confluence_sr": 1.2,       # 32nd -- Fibonacci Confluence S/R (Major+Minor Swing)
     "mtr_range_regime": 0.9,  # 27th -- MTR quantitative range-regime detector
     "mtr_trend_regime": 0.8,  # 28th -- MTR quantitative trend-regime detector
 }
 STRATEGY_WEIGHTS = {k: _RECOMMENDED_STRATEGY_WEIGHTS.get(k, 1.0) for k in strategies.STRATEGY_REGISTRY}
-# Which of the (now 31) confluence strategies are turned on at all (a disabled strategy is
+# Which of the (now 32) confluence strategies are turned on at all (a disabled strategy is
 # excluded entirely — not scored, not displayed as voting).
 CONFLUENCE_ENABLED_STRATEGIES = set(strategies.STRATEGY_REGISTRY.keys())
 # Generic SL/TP construction for a confluence-triggered entry (it isn't tied
@@ -1868,6 +1870,18 @@ def get_macro_snapshot_safe():
         return None
 
 
+def get_fib_confluence_safe(data):
+    """Wraps fib_confluence.compute_confluence() so a Fibonacci computation
+    error can never break a scan. Returns None on any unexpected error and
+    score_fib_confluence_sr() treats that as a graceful 0/0, exactly like
+    score_macro_bias() does when data["macro"] is None."""
+    try:
+        return fib_confluence.compute_confluence(data)
+    except Exception:
+        logger.exception("fib_confluence.compute_confluence() failed — fib_confluence_sr will score 0/0 this scan.")
+        return None
+
+
 def _mtr_is_danger(data):
     """MTR-inspired danger gate: blocks new entries when H1 ATR is spiking
     (> 1.5× 50-bar baseline). Runs from already-fetched market data so there
@@ -1910,9 +1924,11 @@ def build_market_data():
     df_m1 = strategies.enrich(get_rates(SYMBOL, TF_M1, 200))
     dom = get_dom_snapshot(SYMBOL)
     macro = get_macro_snapshot_safe()
-    return {"d1": df_d1, "h4": df_h4, "h1": df_h1, "m15": df_m15, "m5": df_m5, "m1": df_m1,
+    data = {"d1": df_d1, "h4": df_h4, "h1": df_h1, "m15": df_m15, "m5": df_m5, "m1": df_m1,
             "now": datetime.now(), "dom": dom, "macro": macro,
             "myfxbook_contrarian": MYFXBOOK_CONTRARIAN}
+    data["fib_confluence"] = get_fib_confluence_safe(data)
+    return data
 
 
 def _load_json(path, default):

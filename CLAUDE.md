@@ -100,7 +100,7 @@ panel (shows each group's bias + candidate even when nothing fires).
 5. Regenerate the dashboard (`python generate_dashboard.py`) if you want a
    fresh `dashboard.html` reflecting the very latest JSON state.
 
-## Strategies (31 total)
+## Strategies (32 total)
 
 24 price/order-flow/macro strategies, a 25th: **Myfxbook Retail
 Sentiment** (`score_myfxbook_sentiment` in `strategies.py`, fetched by
@@ -178,6 +178,24 @@ was flagged, not fixed, when `score_smart_money_sweep` was added (fixing
 it would change when the older scalp strategies fire, which wasn't asked
 for). If "why didn't my scalp strategy fire at the time I expected"
 comes up, check this first.
+
+A 32nd: **Fibonacci Confluence S/R (Major+Minor Swing)** (`score_fib_confluence_sr` in
+`strategies.py`, key `fib_confluence_sr`, weight `1.2`) — implements the user-supplied
+"Fibonacci Level.docx" reference as a computable strategy. Finds the most recent major
+swing leg on H4 and minor swing leg on H1, computes the full Fibonacci level table for
+each (retracement 0-100%, extensions 127/161.8/200/261.8/300%, negative extensions),
+then finds price zones where a major-swing Fibonacci level and a minor-swing level land
+within 0.35×ATR of each other (confluence). Each zone gets bonus confirmation points
+for co-location with an EMA/SMA, a prior horizontal S/R swing, or a trendline/channel
+boundary (per the doc's "do not use Fibonacci alone" rule). Nearest confirmed SUPPORT
+zone below price → Long vote; nearest RESISTANCE zone above price → Short vote. Reads
+`data["fib_confluence"]` pre-computed by `get_fib_confluence_safe()` in
+`xauusd_mt5_strategy.py` (same try/except pattern as `get_macro_snapshot_safe()` for
+macro_bias). The standalone module `fib_confluence.py` also appends every computed
+swing leg + zone set to `fib_confluence_history.db` (SQLite, audit trail) and persists
+OHLC bars to `price_bars` table for backtesting (mirrors `macro_data_history.db`
+rationale). Uses only H4 + H1 OHLC + indicators already present every scan — no new
+MT5 data wiring required.
 
 ## Hard rules (apply even when debugging)
 

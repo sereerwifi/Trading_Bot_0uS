@@ -37,6 +37,13 @@ import numpy as np
 import pandas as pd
 from collections import deque
 
+try:
+    from fib_confluence import compute_confluence, level_label
+    _FIB_CONFLUENCE_AVAILABLE = True
+except Exception:
+    _FIB_CONFLUENCE_AVAILABLE = False
+    def level_label(r): return str(r)  # noqa: E302 — fallback stub
+
 # ----------------------------- shared indicator helpers ---------------------
 # Self-contained (deliberately not imported from xauusd_mt5_strategy.py) to
 # keep this module import-safe on its own (no MetaTrader5 dependency, no
@@ -2051,6 +2058,62 @@ def score_smart_money_sweep(data, session_start=(7, 0), session_end=(10, 0),
     return {"long": long_score, "short": short_score, "note": note}
 
 
+def score_fib_confluence_sr(data):
+    """32nd strategy — Fibonacci Confluence S/R (Major+Minor Swing).
+    Reads pre-computed data["fib_confluence"] (set by get_fib_confluence_safe()
+    in xauusd_mt5_strategy.py before strategies are scored — same pattern as
+    data["macro"] for score_macro_bias()). Returns 0/0 gracefully when the
+    compute step errored or there are no zones near price.
+
+    Scoring logic (per the user's Fibonacci Level reference doc):
+      - Base score: 45 points per zone that exists near price (confluence of
+        major + minor swing Fibonacci levels within 0.35xATR).
+      - +18 per confirmation layer each zone has (EMA/SMA proximity,
+        horizontal S/R match, trendline/channel match).
+      - Score capped at 100.
+    Directional vote:
+      - Nearest SUPPORT zone below price -> Long vote
+      - Nearest RESISTANCE zone above price -> Short vote
+    Both sides can vote simultaneously (ranging around a zone cluster)."""
+    result = data.get("fib_confluence")
+    if not result or result.get("error"):
+        return {"long": 0.0, "short": 0.0, "note": "fib_confluence unavailable"}
+
+    nearest_support = result.get("nearest_support")
+    nearest_resist = result.get("nearest_resistance")
+    price = result.get("symbol_price", 0.0)
+    atr = result.get("atr_minor", 1.0) or 1.0
+
+    long_score = 0.0
+    short_score = 0.0
+    note_parts = []
+
+    if nearest_support:
+        long_score = nearest_support.get("confluence_score", 0.0)
+        dist_atr = abs(nearest_support["distance_from_price"]) / atr
+        if dist_atr > 1.5:
+            long_score *= max(0.0, 1.0 - (dist_atr - 1.5) * 0.3)
+        label = level_label(nearest_support["major_ratio"])
+        confs = nearest_support.get("confirmations", [])
+        note_parts.append(f"Sup {price - abs(nearest_support['distance_from_price']):.2f} "
+                          f"(Fib {label}, {dist_atr:.2f}xATR, {len(confs)} conf)")
+
+    if nearest_resist:
+        short_score = nearest_resist.get("confluence_score", 0.0)
+        dist_atr = abs(nearest_resist["distance_from_price"]) / atr
+        if dist_atr > 1.5:
+            short_score *= max(0.0, 1.0 - (dist_atr - 1.5) * 0.3)
+        label = level_label(nearest_resist["major_ratio"])
+        confs = nearest_resist.get("confirmations", [])
+        note_parts.append(f"Res {price + nearest_resist['distance_from_price']:.2f} "
+                          f"(Fib {label}, {dist_atr:.2f}xATR, {len(confs)} conf)")
+
+    note = "; ".join(note_parts) if note_parts else "no zones near price"
+    return {"long": round(min(long_score, 100.0), 1),
+            "short": round(min(short_score, 100.0), 1),
+            "note": note}
+
+
 # ----------------------------- registry + aggregation ---------------------------
 STRATEGY_REGISTRY = {
     "order_block": ("Order Block (ICT)", score_order_block),
@@ -2129,6 +2192,15 @@ STRATEGY_REGISTRY = {
         lambda data: score_smart_money_sweep(
             data, session_start=(2, 0), session_end=(4, 0),
             session_label="night/US-close"),
+    ),
+    # ---- 32nd: Fibonacci Confluence S/R (Major+Minor Swing) ★ — reads
+    # data["fib_confluence"] pre-computed by get_fib_confluence_safe() in
+    # xauusd_mt5_strategy.py (same pattern as data["macro"] for score_macro_bias).
+    # Uses fib_confluence.py's compute_confluence(h4, h1 swing legs) +
+    # confirmation layers (EMA/SMA, horizontal S/R, trendline/channel).
+    "fib_confluence_sr": (
+        "Fibonacci Confluence S/R (Major+Minor Swing) ★",
+        score_fib_confluence_sr,
     ),
 }
 
