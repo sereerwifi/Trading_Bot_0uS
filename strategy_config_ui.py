@@ -1445,4 +1445,14 @@ class _TypedStringVar:
 
 
 if __name__ == "__main__":
-    App().mainloop()
+    import sys as _sys
+    _autostart = "--autostart" in _sys.argv
+    app = App()
+    if _autostart:
+        # Trigger the full Start Bot sequence (saves config, starts EA +
+        # dashboard watcher + web server + tunnel + backup) automatically,
+        # without requiring the user to click the button. Used by
+        # launch_bot.py --autostart so a post-push restart goes through the
+        # same code path as a manual UI click.
+        app.after(1500, app.start_bot)
+    app.mainloop()

@@ -1,8 +1,16 @@
 """Bot launcher — kills any stale bot processes, then opens the config UI.
-Use the UI's '▶ Start Bot' button to start the EA and all supporting
-processes. The bot will NOT start automatically on launch.
 
-Run via start_bot.bat or: python launch_bot.py
+Two modes:
+  python launch_bot.py             -- opens UI only; click '▶ Start Bot'
+                                      to start the EA + all support processes.
+  python launch_bot.py --autostart -- opens UI AND auto-triggers Start Bot
+                                      after 1.5 s (same code path as clicking
+                                      the button, so dashboard watcher, web
+                                      server, Cloudflare tunnel, and backup
+                                      watch all start correctly). Use this
+                                      after a git push/sync to restart the
+                                      bot through the UI sequence rather than
+                                      spawning xauusd_mt5_strategy.py directly.
 """
 import subprocess
 import sys
@@ -46,9 +54,15 @@ def kill_stale():
 
 
 if __name__ == "__main__":
+    autostart = "--autostart" in sys.argv
+
     print("Killing stale bot processes...")
     kill_stale()
 
-    print("Opening config UI — use '▶ Start Bot' to start the EA.")
     ui_path = os.path.join(THIS_DIR, "strategy_config_ui.py")
-    subprocess.Popen([sys.executable, ui_path], cwd=THIS_DIR)
+    if autostart:
+        print("Opening config UI with --autostart (Start Bot will fire automatically)...")
+        subprocess.Popen([sys.executable, ui_path, "--autostart"], cwd=THIS_DIR)
+    else:
+        print("Opening config UI — use '▶ Start Bot' to start the EA.")
+        subprocess.Popen([sys.executable, ui_path], cwd=THIS_DIR)
