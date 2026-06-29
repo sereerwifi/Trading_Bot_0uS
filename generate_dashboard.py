@@ -735,10 +735,10 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
             return (f'<div class="card"><div class="card-label">{label}</div>'
                     f'<div class="card-value" style="font-size:15px;color:var(--text-dim)">N/A</div></div>')
         pnl_cls = "pos" if pnl >= 0 else "neg"
-        wr = f" &middot; {wins}/{trades} ({wins/trades*100:.0f}% WR)" if trades else ""
+        wr = f" &middot; {wins}/{trades} ({wins/trades*100:.0f}% WR closed)" if trades else ""
         return (f'<div class="card"><div class="card-label">{label}</div>'
                 f'<div class="card-value {pnl_cls}" style="font-size:20px">{fmt_money(pnl)}</div>'
-                f'<div class="msg" style="font-size:12px;margin-top:4px">{trades} trades{wr}</div></div>')
+                f'<div class="msg" style="font-size:12px;margin-top:4px">{trades} closed trades{wr}</div></div>')
 
     if perf:
         dd_usd = perf.get("max_dd_usd")
@@ -747,13 +747,24 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
         dd_cls = "neg" if (dd_usd or 0) > 0 else ""
         wr_all = perf.get("overall_winrate")
         wr_str = f"{wr_all:.0f}%" if wr_all is not None else "-"
+
+        # Effective today = closed P&L + open floating P&L
+        open_float = sum(p.profit for p in snap["positions"]) if snap["positions"] else 0.0
+        daily_pnl  = perf.get("daily_pnl") or 0.0
+        eff_today  = daily_pnl + open_float
+        eff_cls    = "pos" if eff_today >= 0 else "neg"
+        open_n     = len(snap["positions"])
+
         perf_cards = (
-            _perf_card("Daily P&amp;L",   perf.get("daily_pnl"),   perf.get("daily_trades",0),   perf.get("daily_wins",0))
-            + _perf_card("Weekly P&amp;L",  perf.get("weekly_pnl"),  perf.get("weekly_trades",0),  perf.get("weekly_wins",0))
-            + _perf_card("Monthly P&amp;L", perf.get("monthly_pnl"), perf.get("monthly_trades",0), perf.get("monthly_wins",0))
+            _perf_card("Daily P&amp;L (closed)",   perf.get("daily_pnl"),   perf.get("daily_trades",0),   perf.get("daily_wins",0))
+            + f'<div class="card"><div class="card-label">Effective Today (incl. open)</div>'
+              f'<div class="card-value {eff_cls}" style="font-size:20px">{fmt_money(eff_today)}</div>'
+              f'<div class="msg" style="font-size:12px;margin-top:4px">closed {fmt_money(daily_pnl)} + {open_n} open positions ({fmt_money(open_float)} float)</div></div>'
+            + _perf_card("Weekly P&amp;L (closed)",  perf.get("weekly_pnl"),  perf.get("weekly_trades",0),  perf.get("weekly_wins",0))
+            + _perf_card("Monthly P&amp;L (closed)", perf.get("monthly_pnl"), perf.get("monthly_trades",0), perf.get("monthly_wins",0))
             + f'<div class="card"><div class="card-label">Max Drawdown (120d)</div>'
               f'<div class="card-value {dd_cls}" style="font-size:18px">{dd_val}</div></div>'
-            + f'<div class="card"><div class="card-label">Overall Win Rate (120d)</div>'
+            + f'<div class="card"><div class="card-label">Overall Win Rate (120d, closed)</div>'
               f'<div class="card-value" style="font-size:20px">{wr_str}</div>'
               f'<div class="msg" style="font-size:12px;margin-top:4px">{perf.get("total_trades",0)} closed trades</div></div>'
         )
@@ -993,7 +1004,7 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
 <section>
   <h2>Performance Statistics</h2>
   <div class="grid-cards">{perf_cards}</div>
-  <div class="msg" style="margin-top:8px;font-size:12.5px;color:var(--text-dim)">Realised P&amp;L from EA trades only (magic={esc(str(ea.MAGIC_NUMBER))}) &middot; Daily = today Thai time &middot; Weekly = Mon–Sun &middot; Monthly = calendar month &middot; Max Drawdown = peak-to-trough over 120-day window</div>
+  <div class="msg" style="margin-top:8px;font-size:12.5px;color:var(--text-dim)">EA trades only (magic={esc(str(ea.MAGIC_NUMBER))}) &middot; P&amp;L / WR = <b>closed trades only</b> — open floating P&amp;L shown separately in "Effective Today" &middot; Daily = today Thai time &middot; Weekly = Mon–Sun &middot; Monthly = calendar month &middot; Max Drawdown = peak-to-trough over 120-day window</div>
 </section>
 
 <section>

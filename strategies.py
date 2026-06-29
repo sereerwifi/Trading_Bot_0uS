@@ -1083,7 +1083,8 @@ def _macro_bull_score(macro):
     """Computes the same weighted institutional 'Gold Decision Matrix' bull
     score (0-100, >50 = bullish Gold) that score_macro_bias() displays as its
     own strategy, but as a reusable helper — DXY 30%, US10Y Yield 25%, Fed
-    Expectation 15%, ETF Flow 10%, COT Net Long 10%, COMEX Registered 10%.
+    Expectation 15% (2Y proxy), ETF Flow 10%, COT Net Long 10%, COMEX
+    Registered 10%.
     Returns None if macro data hasn't been fetched yet or no factor is
     available, so callers can no-op cleanly instead of treating "no data" as
     "bearish"."""
