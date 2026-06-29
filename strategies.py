@@ -1004,10 +1004,10 @@ def score_macro_bias(data):
         Factor              Weight   Bullish Gold          Bearish Gold
         DXY                  30%     DXY falling            DXY rising
         US10Y Yield          25%     Yield falling          Yield rising
-        Fed Expectation      20%     Cut priced in          Hawkish/hold priced in
+        Fed Expectation      15%     Cut priced in          Hawkish/hold priced in
         ETF Flow (GLD)       10%     Inflow                 Outflow
         COT Position         10%     Net Long rising        Net Long falling
-        COMEX Registered      5%     Registered thinning    Registered building
+        COMEX Registered     10%     Registered thinning    Registered building
 
     "Fed Expectation" has no free, scrapeable CME FedWatch API (real
     FedWatch odds come from a JS-rendered page with no public data feed) so
@@ -1083,7 +1083,7 @@ def _macro_bull_score(macro):
     """Computes the same weighted institutional 'Gold Decision Matrix' bull
     score (0-100, >50 = bullish Gold) that score_macro_bias() displays as its
     own strategy, but as a reusable helper — DXY 30%, US10Y Yield 25%, Fed
-    Expectation 20%, ETF Flow 10%, COT Net Long 10%, COMEX Registered 5%.
+    Expectation 15%, ETF Flow 10%, COT Net Long 10%, COMEX Registered 10%.
     Returns None if macro data hasn't been fetched yet or no factor is
     available, so callers can no-op cleanly instead of treating "no data" as
     "bearish"."""
@@ -1098,7 +1098,7 @@ def _macro_bull_score(macro):
         factors.append(("US10Y Yield", 25, yld["change"] < 0))
     fed = macro.get("fed_expectation")
     if fed and fed.get("change") is not None:
-        factors.append(("Fed Expectation (2Y proxy)", 20, fed["change"] < 0))
+        factors.append(("Fed Expectation (2Y proxy)", 15, fed["change"] < 0))
     etf = macro.get("etf_flow")
     if etf and etf.get("change_tonnes") is not None:
         factors.append(("ETF Flow (GLD)", 10, etf["change_tonnes"] > 0))
@@ -1108,7 +1108,7 @@ def _macro_bull_score(macro):
     comex = macro.get("comex")
     if comex and comex.get("registered_oz") is not None and comex.get("eligible_oz"):
         ratio = comex["registered_oz"] / max(comex["eligible_oz"], 1.0)
-        factors.append(("COMEX Registered", 5, ratio < 0.5))
+        factors.append(("COMEX Registered", 10, ratio < 0.5))
     if not factors:
         return None
     total_weight = sum(w for _, w, _ in factors)
@@ -2079,7 +2079,7 @@ STRATEGY_REGISTRY = {
     # 0/0 gracefully if the broker/symbol doesn't expose DOM data.
     "order_flow_dom": ("Order Flow (DOM)", score_order_flow_dom),
     # ---- weighted institutional "Gold Decision Matrix" (DXY 30%, US10Y
-    # yield 25%, Fed Expectation 20%, ETF flow 10%, COT 10%, COMEX 5%).
+    # yield 25%, Fed Expectation 15%, ETF flow 10%, COT 10%, COMEX 10%).
     # Reads data["macro"] (see macro_data.py) — scores 0/0 gracefully if
     # that hasn't been fetched yet.
     "macro_bias": ("Macro Bias (Big Data)", score_macro_bias),
