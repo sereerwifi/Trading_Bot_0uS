@@ -25,7 +25,6 @@ _BOT_SCRIPT_FRAGMENTS = {
     "generate_dashboard.py",
     "dashboard_server.py",
     "backup_restore.py",
-    "strategy_config_ui.py",
     "bot_monitor.py",
     "auto_minimize.py",
     "launch_bot.py",
