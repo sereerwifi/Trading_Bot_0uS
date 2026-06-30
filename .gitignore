@@ -10,8 +10,17 @@ open_entry_meta.json
 processed_deals.json
 manual_trades.json
 macro_data_cache.json
-macro_data_history.db
+market_state.json
 dashboard.html
+
+# History databases (runtime data, can be large — backed up via backup_restore.py)
+macro_data_history.db
+fib_confluence_history.db
+harmonic_patterns_history.db
+strategy_scores_history.db
+
+# Analysis output files
+*.csv
 
 # Logs and backups (can be large)
 logs/
