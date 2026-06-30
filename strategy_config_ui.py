@@ -701,6 +701,18 @@ class App(tk.Tk):
             self.backup_proc = None
             return
 
+        # Launch auto_minimize.py in the background — waits 15 s then
+        # minimizes every bot-related console window while keeping MT5
+        # and any other unrelated app the user has open completely untouched.
+        _auto_min = os.path.join(THIS_DIR, "auto_minimize.py")
+        if os.path.exists(_auto_min):
+            _min_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+            subprocess.Popen(
+                [sys.executable, _auto_min, "--delay", "15"],
+                cwd=THIS_DIR,
+                **({"creationflags": _min_flags} if sys.platform == "win32" else {}),
+            )
+
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
         self._poll_processes()
