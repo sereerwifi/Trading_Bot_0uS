@@ -139,6 +139,8 @@ def check_calendar(name, stale_key):
 # Run all checks
 # ---------------------------------------------------------------------------
 def main():
+    global results
+    results = []   # reset on each call so repeated main() calls don't accumulate
     parser = argparse.ArgumentParser()
     parser.add_argument("--fix",   action="store_true", help="Clear stale/failed cache before checking")
     parser.add_argument("--quiet", action="store_true", help="Only print failures")

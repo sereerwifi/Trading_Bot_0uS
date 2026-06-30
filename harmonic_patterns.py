@@ -226,15 +226,17 @@ def _match_classic(name, spec, X, A, B, C, atr):
 
     cd_lo, cd_hi = spec["cd_bc"]
     cd_mid = (cd_lo + cd_hi) / 2.0
-    d_from_cd = C + cd_mid * (B - C)  # extends C past B in the CD direction (was C-B, wrong direction)
+    d_from_cd = C + cd_mid * (B - C)
+    # cd_ratio_implied kept for the return dict (debugging) but NOT used as an
+    # independent confirmation: it's derived from d_from_xd which is already
+    # constrained by the XD ratio, so it trivially passes the cd_bc band and
+    # would double-count. PRZ convergence (tightness) captures agreement instead.
     cd_ratio_implied = _ratio(d_from_xd - C, C - B)
-    cd_confirmed = _in_band(cd_ratio_implied, spec["cd_bc"])
 
     convergence = abs(d_from_xd - d_from_cd)
     n_confirm = sum([
         _in_band(ab_xa, spec["ab_xa"]),
         _in_band(bc_ab, spec["bc_ab"]),
-        bool(cd_confirmed),
     ])
     tightness = max(0.0, 1.0 - min(convergence / max(atr * _XD_CONVERGENCE_ATR, 1e-6), 1.0))
     confluence_score = min(100.0, 40.0 + n_confirm * 12.0 + tightness * 24.0)

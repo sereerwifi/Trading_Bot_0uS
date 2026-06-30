@@ -301,6 +301,7 @@ _PROXY_SOURCE_NAMES: "dict[str, set[str]]" = {
 
 def _db_connect():
     conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""CREATE TABLE IF NOT EXISTS macro_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT NOT NULL,
@@ -895,7 +896,10 @@ def _myfxbook_login(email, password):
         return None
     url = ("https://www.myfxbook.com/api/login.json?"
            + urllib.parse.urlencode({"email": email, "password": password}))
-    raw = _http_get(url)
+    try:
+        raw = _http_get(url)
+    except Exception as exc:
+        raise type(exc)("Myfxbook login request failed (credentials redacted)") from None
     j = json.loads(raw)
     if j.get("error") or not j.get("session"):
         return None

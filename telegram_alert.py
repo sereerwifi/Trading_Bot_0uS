@@ -1,8 +1,9 @@
 """
 Telegram Alert — minimal, dependency-free Telegram Bot API notifier.
 =======================================================================
-Uses only the standard library (urllib) so no extra `pip install` is needed
-beyond what the EA already requires.
+Uses only the standard library (urllib) plus `symbol_normalize` (a project
+module in the same directory). No external `pip install` is needed beyond
+what the EA already requires.
 
 Setup (do this yourself on your machine — never share your bot token/chat id
 with anyone, including in screenshots):

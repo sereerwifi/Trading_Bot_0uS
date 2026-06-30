@@ -67,10 +67,18 @@ def load_state(path=STATE_PATH):
 
 
 def save_state(state, path=STATE_PATH):
+    import time as _time
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, path)
+    for attempt in range(3):
+        try:
+            os.replace(tmp_path, path)
+            break
+        except PermissionError:
+            if attempt == 2:
+                raise
+            _time.sleep(0.05)
 
 
 def _check_close(pos, bid, ask):

@@ -338,7 +338,6 @@ def fetch_live(symbol, timeframe_str, n_bars):
                             f"— check symbol name (try symbol_normalize.resolve()) and that the "
                             f"terminal has enough history downloaded for this timeframe.")
     df = pd.DataFrame(rates)
-    df = df.rename(columns={"open": "open", "high": "high", "low": "low", "close": "close"})
     return df[["open", "high", "low", "close"]]
 
 

@@ -17,8 +17,11 @@ import re
 # place that should ever need editing when a new broker/source spelling
 # turns up.
 _GOLD_ALIASES = {
-    "GOLD", "XAUUSD", "XAUUSDM", "XAUUSDC", "XAUUSD.", "XAUUSD#",
+    "GOLD", "XAUUSD", "XAUUSDM", "XAUUSDC",
     "GOLD#", "GOLDM", "GOLDSPOT", "XAU/USD", "XAU-USD", "XAU_USD", "XAU",
+    # Note: "XAUUSD." and "XAUUSD#" are intentionally excluded — _clean() strips
+    # '.' and '#' before the set lookup, so they'd never match as written; they
+    # are already covered by the startswith("XAUUSD") fallback in is_gold().
 }
 
 # The name each external, non-broker source expects when you query it for

@@ -2052,6 +2052,7 @@ _DEBUG_SCORES_SCAN_COUNT = 0  # in-process counter, used to honor DEBUG_LOG_ALL_
 
 def _debug_scores_db_connect():
     conn = sqlite3.connect(STRATEGY_SCORES_HISTORY_DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""CREATE TABLE IF NOT EXISTS strategy_scores_history (
         scanned_at REAL,
         scanned_at_iso TEXT,
@@ -2108,6 +2109,7 @@ def get_strategy_scores_history(limit=500, since_ts=None):
     """Reads back strategy_scores_history rows, oldest -> newest. Never
     raises. `since_ts` (unix timestamp) optionally filters to rows at or
     after that time, for pulling a specific event window."""
+    conn = None
     try:
         conn = _debug_scores_db_connect()
         if since_ts is not None:
@@ -2120,7 +2122,6 @@ def get_strategy_scores_history(limit=500, since_ts=None):
                 "SELECT scanned_at_iso, entry_mode, direction_taken, logic_groups_json, scores_json "
                 "FROM strategy_scores_history ORDER BY scanned_at DESC LIMIT ?", (limit,))
         rows = cur.fetchall()
-        conn.close()
         out = []
         for scanned_at_iso, entry_mode, direction_taken, logic_groups_json, scores_json in rows:
             out.append({
@@ -2136,6 +2137,9 @@ def get_strategy_scores_history(limit=500, since_ts=None):
     except Exception:
         logger.exception("get_strategy_scores_history() failed.")
         return []
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def run_confluence_scan():

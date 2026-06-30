@@ -98,10 +98,10 @@ def record_trade_result(state, strategy_key, won, max_consecutive_losses, min_wi
 
     lookback = entry["results"][-winrate_lookback_trades:] if winrate_lookback_trades else entry["results"]
     if min_winrate_pct is not None and len(lookback) >= max(3, (winrate_lookback_trades or 0) // 2):
-        winrate = 100.0 * sum(lookback) / len(lookback)
-        if winrate < min_winrate_pct:
+        winrate_val = 100.0 * sum(lookback) / len(lookback)
+        if winrate_val < min_winrate_pct:
             should_bench = True
-            wr_reason = f"win-rate {winrate:.1f}% over last {len(lookback)} trades < floor {min_winrate_pct}%"
+            wr_reason = f"win-rate {winrate_val:.1f}% over last {len(lookback)} trades < floor {min_winrate_pct}%"
             reason = f"{reason} + {wr_reason}" if reason else wr_reason
 
     if should_bench and bench_hours:

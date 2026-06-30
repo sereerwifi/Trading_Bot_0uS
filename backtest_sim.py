@@ -30,15 +30,11 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, THIS_DIR)
 
 import logging
-logging.getLogger("xauusd_ea").disabled = True   # silence bot logger completely
-
-import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
 import strategies
-import xauusd_mt5_strategy as ea
 import fib_confluence
 import harmonic_patterns as harmonic_mod
 
@@ -48,6 +44,7 @@ import harmonic_patterns as harmonic_mod
 DAYS = int(sys.argv[1]) if len(sys.argv) > 1 else 30
 BUFFER_DAYS = 12       # extra history so indicators are warm at sim start
 VOTE_THRESHOLD = strategies.DEFAULT_VOTE_THRESHOLD   # 50.0
+LOOKBACK = {"d1": 260, "h4": 250, "h1": 300, "m15": 200, "m5": 200, "m1": 200}
 
 # ---------------------------------------------------------------------------
 # Helpers (module-level so they remain importable, but they depend on
@@ -81,6 +78,8 @@ def build_data(t):
 # Main — guarded so importing this module has no side effects
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    import MetaTrader5 as mt5
+    import xauusd_mt5_strategy as ea
     logging.getLogger("xauusd_ea").disabled = True
     ea.load_ui_config()
     logging.getLogger("xauusd_ea").disabled = True
@@ -107,7 +106,6 @@ if __name__ == "__main__":
         "m5":  mt5.TIMEFRAME_M5,
         "m1":  mt5.TIMEFRAME_M1,
     }
-    LOOKBACK = {"d1": 260, "h4": 250, "h1": 300, "m15": 200, "m5": 200, "m1": 200}
 
     def fetch(symbol, tf_id, start, end):
         rates = mt5.copy_rates_range(symbol, tf_id, start, end)
