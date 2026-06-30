@@ -69,10 +69,13 @@ def format_order_alert(signal, lot, scores_summary, account_info=None, league_no
     direction = signal.get("direction", "?").upper()
     strategy = signal.get("strategy", "confluence13")
     lbl = symbol_normalize.display_label(symbol or "XAUUSD")
+    entry = signal.get("entry") or 0.0
+    sl    = signal.get("sl")    or 0.0
+    tp2   = signal.get("tp2")   or 0.0
     lines = [
         f"<b>{lbl} EA — New {direction} order</b>",
         f"Strategy: {strategy}",
-        f"Entry: {signal.get('entry'):.2f} | SL: {signal.get('sl'):.2f} | TP2: {signal.get('tp2'):.2f}",
+        f"Entry: {entry:.2f} | SL: {sl:.2f} | TP2: {tp2:.2f}",
         f"Lot: {lot}",
     ]
     if scores_summary:
@@ -136,10 +139,13 @@ def format_signal_alert(signal, scores_summary=None, symbol=None):
     direction = signal.get("direction", "?").upper()
     strategy = signal.get("strategy", "confluence13")
     lbl = symbol_normalize.display_label(symbol or "XAUUSD")
+    entry = signal.get("entry") or 0.0
+    sl    = signal.get("sl")    or 0.0
+    tp2   = signal.get("tp2")   or 0.0
     lines = [
         f"<b>🔎 {lbl} EA — Signal Found ({direction})</b>",
         f"Strategy: {strategy}",
-        f"Entry: {signal.get('entry'):.2f} | SL: {signal.get('sl'):.2f} | TP2: {signal.get('tp2'):.2f}",
+        f"Entry: {entry:.2f} | SL: {sl:.2f} | TP2: {tp2:.2f}",
     ]
     if signal.get("combined_score") is not None:
         lines.append(f"Combined score: {signal['combined_score']:.1f}% "

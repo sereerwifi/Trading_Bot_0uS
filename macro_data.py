@@ -221,20 +221,27 @@ def _cached(key, ttl_seconds, fetch_fn):
 
     # Fetch failed — log ONCE and cache the failure for the full TTL so
     # subsequent scans skip the retry and don't repeat this warning.
-    err_str = f"{type(fetch_err).__name__}: {fetch_err}" if fetch_err else "returned None"
+    raw_err = f"{type(fetch_err).__name__}: {fetch_err}" if fetch_err else "returned None"
+    # HTML-escape so angle brackets in urllib error messages don't corrupt the Telegram HTML layout.
+    err_str = raw_err.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     fallback = "stale cache" if entry and not entry.get("failed") else "no data"
     _logger.warning(
-        f"[macro_data] {key}: fetch failed ({err_str}) "
+        f"[macro_data] {key}: fetch failed ({raw_err}) "
         f"— skipping for {ttl_seconds//3600:.0f}h, using {fallback}."
     )
-    cache[key] = {"ts": now, "failed": True, "data": None}
+    # Carry forward the last-good timestamp so the stale-alert mechanism keeps
+    # firing on every _STALE_ALERT_COOLDOWN interval for the entire outage.
+    # Without this, once the failure record itself expires the alert permanently
+    # stops because last_good_entry becomes None and stale_secs is never computed.
+    prev_good_ts = (entry.get("ts") if (entry and not entry.get("failed"))
+                    else entry.get("last_good_ts") if entry else 0)
+    cache[key] = {"ts": now, "failed": True, "data": None, "last_good_ts": prev_good_ts}
     _save_cache(cache)
 
     # Telegram alert if this source has been failing beyond 2× TTL.
-    last_good_entry = entry if (entry and not entry.get("failed")) else None
     last_sent = _stale_alert_sent.get(key, 0)
-    if last_good_entry:
-        stale_secs = now - last_good_entry["ts"]
+    if prev_good_ts:
+        stale_secs = now - prev_good_ts
         if stale_secs > ttl_seconds * _STALE_ALERT_MULTIPLIER \
                 and (now - last_sent) > _STALE_ALERT_COOLDOWN:
             stale_h = stale_secs / 3600
@@ -248,9 +255,10 @@ def _cached(key, ttl_seconds, fetch_fn):
             _send_telegram(msg)
             _stale_alert_sent[key] = now
             _logger.warning(f"[macro_data] {key}: stale alert sent via Telegram.")
-        return last_good_entry["data"]
 
-    return None
+    # Return the most recent good data if we still have it, else None.
+    last_good_entry = entry if (entry and not entry.get("failed")) else None
+    return last_good_entry["data"] if last_good_entry else None
 
 
 def _http_get(url, headers=None):

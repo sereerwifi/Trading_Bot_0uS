@@ -157,7 +157,7 @@ def main():
     print(f"  First  half (n signals={mid}, n_obs={n1}): {wr1_avg:.3f}  CI [{ci1[0]:.3f}, {ci1[1]:.3f}]")
     print(f"  Second half (n signals={n_raw-mid}, n_obs={n2}): {wr2_avg:.3f}  CI [{ci2[0]:.3f}, {ci2[1]:.3f}]  (from {dt_split})")
     print(f"  SE at n~{mid}: {math.sqrt(0.25/mid):.3f}  -- gap of {abs(wr1_avg-wr2_avg):.3f} is {abs(wr1_avg-wr2_avg)/math.sqrt(0.25/mid):.1f} SE")
-    ci_overlap = ci1[0] < ci2[1] and ci2[0] < ci1[0]  # rough overlap check
+    ci_overlap = ci1[0] < ci2[1] and ci2[0] < ci1[1]  # rough overlap check
     print(f"  CIs overlap? {'YES -- halves not distinguishable from each other' if ci_overlap else 'NO -- halves are distinguishable'}")
 
     # =========================================================

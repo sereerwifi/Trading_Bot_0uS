@@ -90,15 +90,13 @@ ALL_RATIOS = RETRACEMENT_RATIOS + EXTENSION_RATIOS + NEGATIVE_EXTENSION_RATIOS
 
 def level_label(ratio):
     """MT4 "Description" column format, e.g. 0.236 -> '23.6', 1.27 -> '127',
-    -0.618 -> '-161.8'."""
-    if ratio in EXTENSION_RATIOS or ratio == 1.0 or ratio == 0.0:
-        pct = ratio * 100
-    else:
-        pct = ratio * 100
+    -0.27 -> '-127', -0.618 -> '-161.8'."""
     if ratio < 0:
-        mirrored = abs(ratio) * 100
+        # Negative extension labels: -0.27 -> 127, -0.618 -> 161.8, etc.
+        # Formula: (abs(ratio) + 1.0) * 100, matching the MT4 "Description" column.
+        mirrored = (abs(ratio) + 1.0) * 100
         return f"-{mirrored:g}"
-    return f"{pct:g}"
+    return f"{ratio * 100:g}"
 
 
 def fib_price(old_price, new_price, ratio):
@@ -332,6 +330,7 @@ def compute_confluence(data, major_tf="h4", minor_tf="h1",
 # ---------------------------------------------------------------------------
 def _db_connect():
     conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")  # allow concurrent reads while bot writes every scan
     conn.execute("""CREATE TABLE IF NOT EXISTS price_bars (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol TEXT NOT NULL,
@@ -361,11 +360,15 @@ def _db_connect():
 def save_price_bars(symbol, timeframe, df, tail_n=5):
     """Appends the most recent `tail_n` CLOSED bars of `df` to the local
     price_bars table. Deduplicated on (symbol, timeframe, bar_time) —
-    safe to call every scan. Best-effort only — never raises."""
+    safe to call every scan. Best-effort only — never raises.
+    Always skips the last row of the tail (the currently-forming candle)
+    whose OHLC is still live and would be stored stale."""
     try:
         if df is None or len(df) == 0:
             return
-        rows = df.tail(tail_n)
+        # Fetch tail_n+1 then drop the last row (forming candle) so only
+        # fully-closed bars enter the DB.
+        rows = df.tail(tail_n + 1).iloc[:-1]
         conn = _db_connect()
         with conn:
             for _, r in rows.iterrows():
@@ -390,6 +393,7 @@ def save_price_bars(symbol, timeframe, df, tail_n=5):
 
 def get_price_bars(symbol, timeframe, limit=500):
     """Reads back stored bars, oldest -> newest. Never raises."""
+    conn = None
     try:
         conn = _db_connect()
         cur = conn.execute(
@@ -398,10 +402,14 @@ def get_price_bars(symbol, timeframe, limit=500):
             "ORDER BY bar_time DESC LIMIT ?", (symbol, timeframe, limit))
         rows = cur.fetchall()
         conn.close()
+        conn = None
         cols = ["time", "open", "high", "low", "close", "tick_volume", "atr14", "ema20", "ema50", "ema200"]
         return [dict(zip(cols, row)) for row in reversed(rows)]
     except Exception:
         return []
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _save_snapshot(result):
@@ -425,6 +433,7 @@ def _save_snapshot(result):
 
 def get_confluence_history(limit=200):
     """Reads back past confluence snapshots, newest first. Never raises."""
+    conn = None
     try:
         conn = _db_connect()
         cur = conn.execute(
@@ -432,6 +441,7 @@ def get_confluence_history(limit=200):
             "FROM fib_confluence_history ORDER BY scanned_at DESC LIMIT ?", (limit,))
         rows = cur.fetchall()
         conn.close()
+        conn = None
         out = []
         for iso, price, major_json, minor_json, zones_json in rows:
             try:
@@ -446,3 +456,6 @@ def get_confluence_history(limit=200):
         return out
     except Exception:
         return []
+    finally:
+        if conn is not None:
+            conn.close()

@@ -156,6 +156,8 @@ DEFAULT_CONFIG = {
         "log_dir": "logs",
         "max_bytes": 5242880,
         "backup_count": 5,
+        "debug_log_all_strategy_scores": True,
+        "debug_log_all_strategy_scores_every_n": 1,
     },
     "error_handling": {
         "stop_on_error": False,
@@ -216,7 +218,7 @@ DEFAULT_CONFIG = {
             # first successful background fetch. Weighted a bit above the
             # 1.0 baseline since it's the institutional/macro baseline the
             # other 23 price-action strategies don't otherwise see.
-            "macro_bias": {"enabled": True, "weight": 0.6},
+            "macro_bias": {"enabled": True, "weight": 1.2},
             # 4 scalping strategies (#21-24) — weighted per the win-rate info
             # you gave when these were added: London Sweep 55-65% WR, EMA
             # Pullback 60-70% WR (but only fires in a strong, fully-stacked
@@ -532,8 +534,13 @@ class App(tk.Tk):
                 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 return _deep_merge(DEFAULT_CONFIG, data)
-            except Exception:
-                pass
+            except Exception as exc:
+                messagebox.showwarning(
+                    "Config Load Error",
+                    f"strategy_config.json could not be loaded:\n{exc}\n\n"
+                    "Falling back to factory defaults — your saved settings are NOT active.\n"
+                    "Fix or restore the config file, then restart."
+                )
         return json.loads(json.dumps(DEFAULT_CONFIG))
 
     def reset_defaults(self):
@@ -1441,7 +1448,10 @@ class _TypedStringVar:
         try:
             return self.py_type(raw)
         except ValueError:
-            return raw  # leave as-is; save() will surface it, user can fix
+            raise ValueError(
+                f"Invalid value '{raw}' for a {self.py_type.__name__} field — "
+                "please enter a valid number before saving."
+            )
 
 
 if __name__ == "__main__":

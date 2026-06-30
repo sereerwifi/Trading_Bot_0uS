@@ -73,7 +73,7 @@ IMPORTANT — read before running:
 import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 import sys
 import time
 import json
@@ -1079,6 +1079,8 @@ def check_daily_status_notify():
     if now.hour < DAILY_STATUS_HOUR or _LAST_DAILY_STATUS_DATE == today_str:
         return
     info = mt5.account_info()
+    if info is None:
+        return
     positions = mt5.positions_get(symbol=SYMBOL) or []
     open_count = sum(1 for p in positions if p.magic == MAGIC_NUMBER)
     try:
@@ -1315,8 +1317,8 @@ def check_entry_signal():
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
-    in_fib_zone = fibs["61.8"] <= last["close"] <= fibs["50.0"] if leg_up \
-        else fibs["50.0"] <= last["close"] <= fibs["61.8"]
+    in_fib_zone = fibs["50.0"] <= last["close"] <= fibs["61.8"] if leg_up \
+        else fibs["61.8"] <= last["close"] <= fibs["50.0"]
 
     macd_cross_up = prev["macd_hist"] <= 0 and last["macd_hist"] > 0
     macd_cross_down = prev["macd_hist"] >= 0 and last["macd_hist"] < 0
@@ -1941,7 +1943,6 @@ def _mtr_is_danger(data):
     (> 1.5× 50-bar baseline). Runs from already-fetched market data so there
     is no extra MT5 call. Returns (danger: bool, reason: str)."""
     try:
-        import pandas as pd
         h1 = data.get("h1")
         if h1 is None or len(h1) < 55:
             return False, ""
@@ -2256,6 +2257,9 @@ def run_confluence_scan():
         return
 
     info = mt5.account_info()
+    if info is None:
+        logger.warning("run_confluence_scan: mt5.account_info() returned None — skipping scan (transient disconnect).")
+        return
 
     dd_blocked, dd_reason = check_drawdown_breaker(info)
     if dd_blocked:
@@ -2497,19 +2501,14 @@ def run_logic_groups_scan():
         if best_key:
             signals.append({"group": label, "direction": bias, "strategy": best_key, "score": best_score})
 
-    save_scores_snapshot(
-        result,
-        direction_taken=(signals[0]["direction"] if signals else None),
-        macro=data.get("macro"),
-        logic_groups=groups_status,
-    )
-    log_all_strategy_scores_debug(
-        result,
-        direction_taken=(signals[0]["direction"] if signals else None),
-        logic_groups=groups_status,
-    )
-
     if not signals:
+        save_scores_snapshot(
+            result,
+            direction_taken=None,
+            macro=data.get("macro"),
+            logic_groups=groups_status,
+        )
+        log_all_strategy_scores_debug(result, direction_taken=None, logic_groups=groups_status)
         logger.debug("Logic groups scan: no group's trend filter + entry pool produced a fireable signal.")
         return
 
@@ -2530,6 +2529,15 @@ def run_logic_groups_scan():
         )
     chosen = signals[0]
 
+    # Snapshot now — after the sort so direction_taken reflects the true winner.
+    save_scores_snapshot(
+        result,
+        direction_taken=chosen["direction"],
+        macro=data.get("macro"),
+        logic_groups=groups_status,
+    )
+    log_all_strategy_scores_debug(result, direction_taken=chosen["direction"], logic_groups=groups_status)
+
     direction = chosen["direction"]
     strat_key = chosen["strategy"]
     group_label = chosen["group"]
@@ -2546,6 +2554,9 @@ def run_logic_groups_scan():
         return
 
     info = mt5.account_info()
+    if info is None:
+        logger.warning("run_logic_groups_scan: mt5.account_info() returned None — skipping scan (transient disconnect).")
+        return
 
     dd_blocked, dd_reason = check_drawdown_breaker(info)
     if dd_blocked:
@@ -2825,7 +2836,11 @@ def _apply_order_options(signal, lot):
 
 def send_order(signal, lot):
     order_type = mt5.ORDER_TYPE_BUY if signal["direction"] == "long" else mt5.ORDER_TYPE_SELL
-    price = mt5.symbol_info_tick(SYMBOL).ask if signal["direction"] == "long" else mt5.symbol_info_tick(SYMBOL).bid
+    tick = mt5.symbol_info_tick(SYMBOL)
+    if tick is None:
+        logger.error("send_order: symbol_info_tick() returned None — order not sent.")
+        return None
+    price = tick.ask if signal["direction"] == "long" else tick.bid
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": SYMBOL,
@@ -3043,6 +3058,9 @@ def run_once():
         return
 
     info = mt5.account_info()
+    if info is None:
+        logger.warning("run_once: mt5.account_info() returned None — skipping entry check (transient disconnect).")
+        return
 
     # --- Money management gates: checked before even looking for a signal,
     # so a breach blocks ALL new entries regardless of what check_entry_signal

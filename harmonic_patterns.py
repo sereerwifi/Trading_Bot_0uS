@@ -226,7 +226,7 @@ def _match_classic(name, spec, X, A, B, C, atr):
 
     cd_lo, cd_hi = spec["cd_bc"]
     cd_mid = (cd_lo + cd_hi) / 2.0
-    d_from_cd = C + cd_mid * (C - B)
+    d_from_cd = C + cd_mid * (B - C)  # extends C past B in the CD direction (was C-B, wrong direction)
     cd_ratio_implied = _ratio(d_from_xd - C, C - B)
     cd_confirmed = _in_band(cd_ratio_implied, spec["cd_bc"])
 
@@ -293,7 +293,9 @@ def compute_harmonic_patterns(data, timeframe="h1", lookback=200, atr_mult=2.0,
     (x_idx, x_price, x_type), (a_idx, a_price, a_type), \
         (b_idx, b_price, b_type), (c_idx, c_price, c_type) = pivots[-4:]
 
-    direction = "bullish" if x_type == "high" else "bearish"
+    # Carney convention: X=LOW means price rallied from X through A/B/C to D (support at D) → buy.
+    # X=HIGH means price declined from X through A/B/C to D (resistance at D) → sell.
+    direction = "bullish" if x_type == "low" else "bearish"
 
     atr_now = df["atr14"].iloc[-1] if "atr14" in df.columns else None
     if atr_now is None or pd.isna(atr_now):
@@ -342,6 +344,7 @@ def compute_harmonic_patterns(data, timeframe="h1", lookback=200, atr_mult=2.0,
 
 def _db_connect():
     conn = sqlite3.connect(DB_FILE, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")  # allow concurrent reads while bot writes every scan
     conn.execute("""CREATE TABLE IF NOT EXISTS harmonic_pattern_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         scanned_at REAL NOT NULL,
@@ -379,6 +382,7 @@ def _save_snapshot(result):
 
 
 def get_pattern_history(limit=200):
+    conn = None
     try:
         conn = _db_connect()
         cur = conn.execute(
@@ -387,6 +391,7 @@ def get_pattern_history(limit=200):
             "ORDER BY scanned_at DESC LIMIT ?", (limit,))
         rows = cur.fetchall()
         conn.close()
+        conn = None
         out = []
         for iso, tf, direction, price, best_pattern, best_score, points_json, matches_json in rows:
             try:
@@ -401,3 +406,6 @@ def get_pattern_history(limit=200):
         return out
     except Exception:
         return []
+    finally:
+        if conn is not None:
+            conn.close()

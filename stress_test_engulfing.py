@@ -26,7 +26,7 @@ WIN_THRESHOLD_ATR = 0.25  # same as analyze_candlestick_patterns.py
 
 # ---- reuse detector + ATR from the sibling script ----
 sys.path.insert(0, r"C:\Users\Administrator\Desktop\RoBotTrading man 0 V10")
-from analyze_candlestick_patterns import bullish_engulfing, three_white_soldiers, _atr
+from analyze_candlestick_patterns import bullish_engulfing, _atr
 
 
 def fetch_with_time(symbol, tf_str, n_bars):

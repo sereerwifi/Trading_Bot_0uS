@@ -86,6 +86,13 @@ BACKUP_FILES = [
     "strategy_scores.json",
     "processed_deals.json",
     "news_alert_state.json",
+    # History DBs added 2026-06-29 / 2026-06-30 — must be in backup or the
+    # audit trail (fib/harmonic analysis + full strategy-score history) is
+    # silently lost on a VPS restore.
+    "fib_confluence_history.db",
+    "harmonic_patterns_history.db",
+    "strategy_scores_history.db",
+    "shadow_positions.json",
 ]
 
 # Directories backed up recursively (rotated log files).
@@ -133,7 +140,10 @@ def create_backup(out_dir=None, label=None):
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for rel in files + dir_files:
-            zf.write(os.path.join(THIS_DIR, rel), arcname=rel)
+            try:
+                zf.write(os.path.join(THIS_DIR, rel), arcname=rel)
+            except OSError:
+                pass  # file disappeared between listing and zipping (EA mid-write); skip it
         manifest = (
             f"XAUUSD MT5 EA — backup snapshot\n"
             f"Created: {datetime.now().isoformat()}\n"
@@ -207,10 +217,17 @@ def restore_backup(zip_path, target_dir=None, make_safety_backup=True):
             safety_path = None  # don't block a restore over a failed safety backup
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        names = [n for n in zf.namelist() if n != MANIFEST_NAME]
-        zf.extractall(target_dir, members=names)
+        all_names = [n for n in zf.namelist() if n != MANIFEST_NAME]
+        # Zip-slip guard: reject any member whose resolved path would escape target_dir.
+        safe_names = []
+        for name in all_names:
+            dest = os.path.realpath(os.path.join(target_dir, name))
+            if not dest.startswith(os.path.realpath(target_dir) + os.sep):
+                continue
+            safe_names.append(name)
+        zf.extractall(target_dir, members=safe_names)
 
-    return {"restored_files": names, "safety_backup": safety_path}
+    return {"restored_files": safe_names, "safety_backup": safety_path}
 
 
 def _fmt_size(kb):

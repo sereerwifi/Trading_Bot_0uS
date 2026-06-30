@@ -23,6 +23,7 @@ Run:
 
 import argparse
 import base64
+import hmac
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -64,7 +65,7 @@ class AuthHandler(BaseHTTPRequestHandler):
             user, _, pwd = decoded.partition(":")
         except Exception:
             return False
-        return user == self.username and pwd == self.password
+        return hmac.compare_digest(user, self.username) and hmac.compare_digest(pwd, self.password)
 
     def do_GET(self):
         if not self._check_auth():
@@ -77,8 +78,9 @@ class AuthHandler(BaseHTTPRequestHandler):
             return
 
         if not os.path.exists(DASHBOARD_PATH):
-            self.send_response(200)
+            self.send_response(503)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Retry-After", "30")
             self.end_headers()
             self.wfile.write(
                 "<html><body><h2>ยังไม่มี dashboard.html — "

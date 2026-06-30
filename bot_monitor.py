@@ -82,13 +82,17 @@ def is_bot_running():
         )
         return "xauusd_mt5_strategy" in result.stdout
     except Exception:
-        # Fallback: check if any python process is running (less precise)
+        # Fallback: check process list for xauusd_mt5_strategy in command lines.
+        # We cannot use "python.exe in output" because bot_monitor itself is
+        # also a python.exe — that would always return True even when the bot
+        # is dead.
         try:
             result = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq python.exe"],
+                ["wmic", "process", "where", "name='python.exe'",
+                 "get", "CommandLine", "/format:csv"],
                 capture_output=True, text=True, timeout=10
             )
-            return "python.exe" in result.stdout
+            return "xauusd_mt5_strategy" in result.stdout
         except Exception:
             return False
 
@@ -104,10 +108,13 @@ def log_is_fresh():
 
 
 def restart_bot():
-    """Launches the bot in a new window."""
+    """Launches the full bot stack via launch_bot.py --autostart so the
+    dashboard watcher, web server, Cloudflare tunnel, and backup watcher
+    all restart together — not just the EA trading loop."""
     try:
+        launch_script = os.path.join(THIS_DIR, "launch_bot.py")
         subprocess.Popen(
-            [sys.executable, BOT_SCRIPT],
+            [sys.executable, launch_script, "--autostart"],
             cwd=THIS_DIR,
             creationflags=subprocess.CREATE_NEW_CONSOLE
         )
@@ -165,7 +172,11 @@ def main():
                 f"VPS: {os.environ.get('COMPUTERNAME', 'unknown')}"
             )
             cooldown_ok = (time.time() - last_alert_time) > ALERT_COOLDOWN
-            if cooldown_ok or alert_msg != last_alert_msg:
+            # Use AND: both cooldown must have passed AND the message must
+            # have changed (or it's the first alert). Using OR caused a burst
+            # of alerts during status flapping because any message change
+            # bypassed the 5-minute cooldown completely.
+            if cooldown_ok and (alert_msg != last_alert_msg or last_alert_time == 0.0):
                 sent = send_telegram(token, chat_id, alert_msg)
                 print(f"[monitor] Alert sent: {sent}")
                 last_alert_time = time.time()
