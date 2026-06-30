@@ -53,6 +53,10 @@ and Telegram notifications.
   `{"started_at": ..., "pid": ...}`. Used by the dashboard to show uptime.
 - `xauusd_mt5_strategy.log` — the bot's running log. First place to check
   when something looks wrong.
+- `strategy_scores_history.db` — **new 2026-06-30**, see "Fixes from the
+  2026-06-30 reversal post-mortem" below. SQLite history of EVERY
+  strategy's score every scan (not just the winner), queryable via
+  `get_strategy_scores_history()` in `xauusd_mt5_strategy.py`.
 
 ## Entry modes (config: `ENTRY_MODE`)
 
@@ -223,6 +227,49 @@ numpy/pandas/stdlib):
   - Reads `data["harmonic"]` pre-computed by `get_harmonic_patterns_safe()`
     in `xauusd_mt5_strategy.py` — must run after `data["fib_confluence"]`
     is set (order enforced in `build_market_data()`).
+
+## Fixes from the 2026-06-30 reversal post-mortem (local-only, not yet synced to VPS)
+
+A user-run analysis of the live VPS bot's 09:05-10:30 reversal
+(`ANALYSIS_REVERSAL_2026-06-30_0905-1030.md`) surfaced two real runtime bugs
+plus one tuning issue, all addressed here:
+
+1. **`price_bars` table was always empty.** `fib_confluence.save_price_bars()`
+   existed but was never actually called from `get_fib_confluence_safe()` —
+   it was documented as wired in (see the module docstring and
+   `VPS_SYNC_FIB_CONFLUENCE_SR_PROMPT.md`) but the call never made it into
+   the function body, on this copy or the VPS. Fixed: `get_fib_confluence_safe()`
+   now calls `fib_confluence.save_price_bars(SYMBOL, "h4", ...)` and `"h1"`
+   every scan, before computing the confluence snapshot, in its own
+   try/except so a save failure still can't break scoring.
+2. **`logic_groups` mode only logged each group's WINNING strategy**, not
+   all 33 scores every scan, so reversal-specific strategies
+   (`smart_money_sweep_morning` #30, `climax_reversal_sr` #26) couldn't be
+   confirmed/denied as having fired during a past event. Fixed: new
+   `log_all_strategy_scores_debug()` appends every strategy's full score
+   dict (`strategies.score_all()`'s `scores`, already computed every scan —
+   nothing new to calculate) to `strategy_scores_history.db` every scan,
+   called from both `run_confluence_scan()` and `run_logic_groups_scan()`
+   right after `save_scores_snapshot()`. Gated by
+   `DEBUG_LOG_ALL_STRATEGY_SCORES` (default `True`) and throttled by
+   `DEBUG_LOG_ALL_STRATEGY_SCORES_EVERY_N` (default `1`), both overridable
+   via `strategy_config.json`'s `"logging"` section
+   (`debug_log_all_strategy_scores` / `debug_log_all_strategy_scores_every_n`)
+   — same additive, config-flag-driven pattern as `LOGIC_GROUPS_APPLY_DAILY_FILTER`.
+   Read back via `get_strategy_scores_history(limit=..., since_ts=...)`.
+   Purely additive logging — does not change scoring, weights, or entries.
+3. **`harmonic_patterns` (#33) found zero XABCD matches across 135
+   consecutive live scans** in the analyzed window. `_RATIO_TOL` widened
+   from `0.07` to `0.09` in `harmonic_patterns.py` (the analysis report's
+   suggested range was 0.09-0.10). If this now produces too many low-quality
+   matches, the PRZ-convergence and fib-confluence cross-check filters
+   should still keep weak matches from actually voting (entry still requires
+   a rejection candle at the PRZ) — but watch for that before pushing
+   further.
+
+**Not yet synced to the VPS** — see `VPS_SYNC_REVERSAL_POSTMORTEM_FIXES_PROMPT.md`
+for the exact diff to apply there. Per the sync hard rule below, don't
+assume these are live just because they're committed here.
 
 ## Hard rules (apply even when debugging)
 

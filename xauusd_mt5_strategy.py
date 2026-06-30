@@ -78,6 +78,7 @@ import sys
 import time
 import json
 import os
+import sqlite3
 import logging
 import logging.handlers
 
@@ -332,6 +333,24 @@ TF_M1 = mt5.TIMEFRAME_M1        # used by the EMA Pullback scalp (#22)
 # Configurable in strategy_config_ui.py -> "20 กลยุทธ์ (Confluence)" tab.
 # Recommended starting point: ~70.
 MIN_STRATEGY_SCORE = 70.0
+
+# Debug history logging: in ENTRY_MODE == "logic_groups", only the strategy
+# that WINS each group's priority cascade gets logged per scan — the other
+# ~31 strategies' scores exist in memory (strategies.score_all()'s full
+# `scores` dict) and are dumped into strategy_scores.json, but that file is
+# OVERWRITTEN every scan, so there is no historical record. A live-VPS
+# post-mortem of the 2026-06-30 09:05-10:30 reversal hit this wall directly
+# -- reversal-specific strategies (smart_money_sweep_morning, climax_
+# reversal_sr) couldn't be confirmed as having fired during the bounce
+# because nothing preserved their per-scan scores. This flag, when True,
+# appends every strategy's long/short score + note to a local SQLite
+# history table every DEBUG_LOG_ALL_STRATEGY_SCORES_EVERY_N scans, so future
+# "did strategy X fire at time Y" questions can be answered from data
+# instead of "unknown — log doesn't show it". Purely additive/read-only
+# logging — does not change scoring, weights, or entry decisions in any way.
+# See log_all_strategy_scores_debug() / STRATEGY_SCORES_HISTORY_DB_PATH.
+DEBUG_LOG_ALL_STRATEGY_SCORES = True
+DEBUG_LOG_ALL_STRATEGY_SCORES_EVERY_N = 1
 # Minimum number of strategies that must independently vote the same
 # direction (score >= strategies.DEFAULT_VOTE_THRESHOLD) before that side
 # is even considered — this is what enforces "must be confluence, not a
@@ -479,6 +498,7 @@ POST_NEWS_WINDOW_MINUTES = 30        # how long after a release to keep trying
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 ENTRY_META_PATH = os.path.join(_THIS_DIR, "open_entry_meta.json")          # ticket -> contributing strategies
 SCORES_SNAPSHOT_PATH = os.path.join(_THIS_DIR, "strategy_scores.json")     # latest scan, for the dashboard
+STRATEGY_SCORES_HISTORY_DB_PATH = os.path.join(_THIS_DIR, "strategy_scores_history.db")  # per-scan history of ALL strategy scores (see DEBUG_LOG_ALL_STRATEGY_SCORES)
 MARKET_STATE_PATH    = os.path.join(_THIS_DIR, "market_state.json")         # market open/closed status, updated every tick
 PROCESSED_DEALS_PATH = os.path.join(_THIS_DIR, "processed_deals.json")    # avoids double-counting league results
 NEWS_ALERT_STATE_PATH = os.path.join(_THIS_DIR, "news_alert_state.json")  # dedupes pre/post-news alerts
@@ -570,6 +590,7 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     global MARKET_PRICE_SANITY_CHECK_ENABLED, MARKET_PRICE_SANITY_TOLERANCE_PCT
     global LOG_DIR, LOG_LEVEL, LOG_TO_CONSOLE, LOG_FILE_MAX_BYTES, LOG_BACKUP_COUNT
     global ENTRY_MODE, SCAN_INTERVAL_SECONDS, MIN_STRATEGY_SCORE, MIN_AGREEING_STRATEGIES
+    global DEBUG_LOG_ALL_STRATEGY_SCORES, DEBUG_LOG_ALL_STRATEGY_SCORES_EVERY_N
     global LOGIC_GROUP_SELECTION, LOGIC_GROUPS_APPLY_DAILY_FILTER
     global STRATEGY_WEIGHTS, CONFLUENCE_ENABLED_STRATEGIES, CONFLUENCE_SL_ATR_MULT, CONFLUENCE_TP_RR
     global LEAGUE_ENABLED, LEAGUE_MAX_CONSECUTIVE_LOSSES, LEAGUE_MIN_WINRATE_PCT
@@ -673,6 +694,8 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     LOG_FILE_MAX_BYTES = int(lg.get("max_bytes", LOG_FILE_MAX_BYTES))
     LOG_BACKUP_COUNT = int(lg.get("backup_count", LOG_BACKUP_COUNT))
     setup_logging(LOG_DIR, LOG_LEVEL, LOG_TO_CONSOLE, LOG_FILE_MAX_BYTES, LOG_BACKUP_COUNT)
+    DEBUG_LOG_ALL_STRATEGY_SCORES = bool(lg.get("debug_log_all_strategy_scores", DEBUG_LOG_ALL_STRATEGY_SCORES))
+    DEBUG_LOG_ALL_STRATEGY_SCORES_EVERY_N = int(lg.get("debug_log_all_strategy_scores_every_n", DEBUG_LOG_ALL_STRATEGY_SCORES_EVERY_N))
 
     d = cfg.get("daily_filter", {})
     DAILY_FILTER_ENABLED = bool(d.get("enabled", DAILY_FILTER_ENABLED))
@@ -1876,7 +1899,20 @@ def get_fib_confluence_safe(data):
     """Wraps fib_confluence.compute_confluence() so a Fibonacci computation
     error can never break a scan. Returns None on any unexpected error and
     score_fib_confluence_sr() treats that as a graceful 0/0, exactly like
-    score_macro_bias() does when data["macro"] is None."""
+    score_macro_bias() does when data["macro"] is None.
+
+    Also persists the latest H4/H1 OHLC bars to price_bars via
+    fib_confluence.save_price_bars() every scan, independent of whether the
+    confluence calc itself succeeds — this was supposed to happen already
+    (see fib_confluence.py's module docstring + VPS_SYNC_FIB_CONFLUENCE_SR_
+    PROMPT.md) but the call was never actually wired in here, which is why
+    price_bars stayed empty in production. save_price_bars() is itself
+    best-effort/never-raises, so this can't introduce a new failure mode."""
+    try:
+        fib_confluence.save_price_bars(SYMBOL, "h4", data.get("h4"))
+        fib_confluence.save_price_bars(SYMBOL, "h1", data.get("h1"))
+    except Exception:
+        logger.exception("fib_confluence.save_price_bars() failed — price_bars history will be missing this scan.")
     try:
         return fib_confluence.compute_confluence(data)
     except Exception:
@@ -2010,6 +2046,97 @@ def save_scores_snapshot(scan_result, direction_taken=None, macro=None, logic_gr
         logger.exception("Failed to write strategy_scores.json snapshot.")
 
 
+_DEBUG_SCORES_SCAN_COUNT = 0  # in-process counter, used to honor DEBUG_LOG_ALL_STRATEGY_SCORES_EVERY_N
+
+
+def _debug_scores_db_connect():
+    conn = sqlite3.connect(STRATEGY_SCORES_HISTORY_DB_PATH)
+    conn.execute("""CREATE TABLE IF NOT EXISTS strategy_scores_history (
+        scanned_at REAL,
+        scanned_at_iso TEXT,
+        entry_mode TEXT,
+        direction_taken TEXT,
+        logic_groups_json TEXT,
+        scores_json TEXT
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy_scores_history_time "
+                 "ON strategy_scores_history(scanned_at)")
+    return conn
+
+
+def log_all_strategy_scores_debug(scan_result, direction_taken=None, logic_groups=None):
+    """Appends EVERY strategy's score/note for this scan to a local SQLite
+    history table (strategy_scores_history.db), independent of which
+    strategy (if any) actually wins a group's priority cascade or fires a
+    trade. Fixes the gap found during the 2026-06-30 09:05-10:30 reversal
+    post-mortem, where `logic_groups` mode's normal logging only showed the
+    winning strategy per group, so reversal-specific strategies
+    (smart_money_sweep_morning, climax_reversal_sr) couldn't be confirmed
+    as having fired during the bounce even though strategies.score_all()
+    computes a score for all 33 of them every single scan.
+
+    Gated by DEBUG_LOG_ALL_STRATEGY_SCORES (default True) and throttled by
+    DEBUG_LOG_ALL_STRATEGY_SCORES_EVERY_N (default 1 = every scan). Purely
+    additive/read-only — never raises, never affects scoring or entries,
+    matches the best-effort pattern used by fib_confluence.py /
+    harmonic_patterns.py's own history tables."""
+    global _DEBUG_SCORES_SCAN_COUNT
+    if not DEBUG_LOG_ALL_STRATEGY_SCORES:
+        return
+    _DEBUG_SCORES_SCAN_COUNT += 1
+    every_n = max(1, DEBUG_LOG_ALL_STRATEGY_SCORES_EVERY_N)
+    if (_DEBUG_SCORES_SCAN_COUNT % every_n) != 0:
+        return
+    try:
+        now = datetime.now()
+        conn = _debug_scores_db_connect()
+        with conn:
+            conn.execute(
+                "INSERT INTO strategy_scores_history "
+                "(scanned_at, scanned_at_iso, entry_mode, direction_taken, logic_groups_json, scores_json) "
+                "VALUES (?,?,?,?,?,?)",
+                (now.timestamp(), now.isoformat(), ENTRY_MODE, direction_taken,
+                 json.dumps(logic_groups, default=str, ensure_ascii=False),
+                 json.dumps(scan_result.get("scores"), default=str, ensure_ascii=False)))
+        conn.close()
+    except Exception:
+        logger.exception("log_all_strategy_scores_debug() failed — strategy_scores_history.db not updated this scan (non-fatal).")
+
+
+def get_strategy_scores_history(limit=500, since_ts=None):
+    """Reads back strategy_scores_history rows, oldest -> newest. Never
+    raises. `since_ts` (unix timestamp) optionally filters to rows at or
+    after that time, for pulling a specific event window."""
+    try:
+        conn = _debug_scores_db_connect()
+        if since_ts is not None:
+            cur = conn.execute(
+                "SELECT scanned_at_iso, entry_mode, direction_taken, logic_groups_json, scores_json "
+                "FROM strategy_scores_history WHERE scanned_at >= ? ORDER BY scanned_at ASC LIMIT ?",
+                (since_ts, limit))
+        else:
+            cur = conn.execute(
+                "SELECT scanned_at_iso, entry_mode, direction_taken, logic_groups_json, scores_json "
+                "FROM strategy_scores_history ORDER BY scanned_at DESC LIMIT ?", (limit,))
+        rows = cur.fetchall()
+        conn.close()
+        out = []
+        for scanned_at_iso, entry_mode, direction_taken, logic_groups_json, scores_json in rows:
+            out.append({
+                "scanned_at_iso": scanned_at_iso,
+                "entry_mode": entry_mode,
+                "direction_taken": direction_taken,
+                "logic_groups": json.loads(logic_groups_json) if logic_groups_json else None,
+                "scores": json.loads(scores_json) if scores_json else None,
+            })
+        if since_ts is None:
+            out.reverse()
+        return out
+    except Exception:
+        logger.exception("get_strategy_scores_history() failed.")
+        return []
+
+
 def run_confluence_scan():
     """Multi-strategy (31) parallel scan: every strategy in strategies.py scores the
     market 0-100 for long/short; an entry only fires when MULTIPLE
@@ -2107,6 +2234,7 @@ def run_confluence_scan():
         direction = "short"
 
     save_scores_snapshot(result, direction_taken=direction, macro=data.get("macro"))
+    log_all_strategy_scores_debug(result, direction_taken=direction)
 
     if direction is None:
         logger.debug(f"Confluence scan: no side reached the threshold "
@@ -2373,6 +2501,11 @@ def run_logic_groups_scan():
         result,
         direction_taken=(signals[0]["direction"] if signals else None),
         macro=data.get("macro"),
+        logic_groups=groups_status,
+    )
+    log_all_strategy_scores_debug(
+        result,
+        direction_taken=(signals[0]["direction"] if signals else None),
         logic_groups=groups_status,
     )
 

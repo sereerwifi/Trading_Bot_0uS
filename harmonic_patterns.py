@@ -110,7 +110,16 @@ import pandas as pd
 
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "harmonic_patterns_history.db")
 
-_RATIO_TOL = 0.07          # tolerance band added around each textbook ratio
+_RATIO_TOL = 0.09          # tolerance band added around each textbook ratio
+# Widened from 0.07 -> 0.09 on 2026-06-30 after a live-VPS analysis of the
+# 09:05-10:30 reversal found ZERO XABCD matches across 135 consecutive scans
+# in that window (see ANALYSIS_REVERSAL_2026-06-30_0905-1030.md) -- 0.07 was
+# evidently too tight for XAUUSD's real intraday swing noise. If this still
+# produces too few matches, the next step up the report suggested was 0.10;
+# if it now produces too MANY low-quality matches, drop back toward 0.07 --
+# PRZ convergence (_XD_CONVERGENCE_ATR) and the fib_confluence cross-check
+# bonus are the secondary filters that should keep low-quality matches from
+# actually voting once entry-trigger (rejection candle at PRZ) is required.
 _XD_CONVERGENCE_ATR = 1.0  # d_from_xd vs d_from_cd must agree within this many ATRs to count as "converged"
 
 PATTERNS = {
