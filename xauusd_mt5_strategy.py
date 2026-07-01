@@ -619,7 +619,7 @@ def load_ui_config(path=CONFIG_JSON_PATH):
         logger.warning(f"No strategy_config.json found at {path} — using script defaults.")
         return
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         cfg = json.load(f)
 
     risk = cfg.get("risk", {})

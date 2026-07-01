@@ -531,7 +531,7 @@ class App(tk.Tk):
     def load(self):
         if os.path.exists(CONFIG_PATH):
             try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                 return _deep_merge(DEFAULT_CONFIG, data)
             except Exception as exc:
@@ -579,16 +579,28 @@ class App(tk.Tk):
             return False
 
     # ---------- bot control (start/stop EA + dashboard) ----------
+    @staticmethod
+    def _win_minimized_startupinfo():
+        """STARTUPINFO that starts a new console window minimized and without
+        stealing focus from the UI window. Used by all _popen_* helpers on
+        Windows so the bot/dashboard/server consoles never push the config
+        window behind them when Start Bot is clicked."""
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 7  # SW_SHOWMINNOACTIVE — minimized, no focus steal
+        return si
+
     def _popen_script(self, script_path, extra_args=None):
         """Launches a Python script as its own process so it keeps running
         independently of this UI window. On Windows it gets its own console
-        window (CREATE_NEW_CONSOLE) so the user can watch the EA's live log
-        output exactly like running it manually in PowerShell; on
-        macOS/Linux it just inherits this process's stdout/stderr."""
+        window (CREATE_NEW_CONSOLE) started minimized so it never steals
+        focus from the UI; on macOS/Linux it inherits this process's
+        stdout/stderr."""
         args = [sys.executable, script_path] + (extra_args or [])
         kwargs = {"cwd": THIS_DIR}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+            kwargs["startupinfo"] = self._win_minimized_startupinfo()
         return subprocess.Popen(args, **kwargs)
 
     def _popen_tunnel(self):
@@ -605,6 +617,7 @@ class App(tk.Tk):
         kwargs = {"cwd": CLOUDFLARED_DIR}
         if sys.platform == "win32":
             kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE
+            kwargs["startupinfo"] = self._win_minimized_startupinfo()
         return subprocess.Popen(args, **kwargs)
 
     def _popen_backup_watch(self):
