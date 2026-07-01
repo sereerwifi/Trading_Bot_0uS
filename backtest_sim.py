@@ -80,9 +80,8 @@ def build_data(t):
 if __name__ == "__main__":
     import MetaTrader5 as mt5
     import xauusd_mt5_strategy as ea
-    logging.getLogger("xauusd_ea").disabled = True
     ea.load_ui_config()
-    logging.getLogger("xauusd_ea").disabled = True
+    logging.getLogger("xauusd_ea").disabled = True  # must be AFTER load_ui_config (setup_logging re-enables it)
 
     SL_ATR_MULT   = ea.CONFLUENCE_SL_ATR_MULT           # 1.5
     TP_RR         = ea.CONFLUENCE_TP_RR                 # 2.0
