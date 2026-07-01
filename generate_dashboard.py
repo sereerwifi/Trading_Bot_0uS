@@ -39,6 +39,7 @@ import xauusd_mt5_strategy as ea
 import league
 import macro_data
 import symbol_normalize
+import account_collector
 
 try:
     import MetaTrader5 as mt5
@@ -414,6 +415,31 @@ def collect_economic_calendar():
         return []
 
 
+def collect_accounts_data():
+    """Read account history from account_balance_history.db and the accounts
+    config list. Returns a list of dicts, one per configured+enabled account,
+    each with keys: label, login, history (list), latest (dict|None)."""
+    try:
+        import json as _json
+        cfg_path = os.path.join(SCRIPT_DIR, "strategy_config.json")
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = _json.load(f)
+        accounts_list = cfg.get("accounts", {}).get("list", [])
+        if not accounts_list:
+            return []
+        result = []
+        for acct in accounts_list:
+            if not acct.get("enabled", True):
+                continue
+            label = acct.get("label") or str(acct.get("mt5_login", "unknown"))
+            history = account_collector.get_account_history(label, limit=500)
+            latest  = account_collector.get_latest_snapshot(label)
+            result.append({"label": label, "login": acct.get("mt5_login"), "history": history, "latest": latest})
+        return result
+    except Exception:
+        return []
+
+
 def parse_log_file():
     """Reads the last LOG_TAIL_LINES lines of the EA log and returns
     (entries, order_records, stats). entries is newest-first."""
@@ -508,9 +534,169 @@ def fmt_duration(seconds):
 
 
 # --------------------------------------------------------------------------
+# --------------------------------------------------------------------------
+# Accounts section builder
+# --------------------------------------------------------------------------
+def _build_accounts_section(accounts_data):
+    """Build the Accounts HTML section with a client-side tab switcher,
+    Chart.js line chart, and a Clear History button per account."""
+    import json as _json
+
+    if not accounts_data:
+        return ""
+
+    # Build per-account data blobs for JS
+    js_accounts = []
+    for acct in accounts_data:
+        history = acct["history"]
+        labels   = [datetime.fromtimestamp(r["timestamp"]).strftime("%m/%d %H:%M") for r in history]
+        balances = [round(r["balance"], 2) if r["balance"] is not None else None for r in history]
+        equities = [round(r["equity"],  2) if r["equity"]  is not None else None for r in history]
+        latest   = acct["latest"] or {}
+        currency = (latest.get("currency") or "USD")
+        js_accounts.append({
+            "label":    acct["label"],
+            "login":    acct["login"],
+            "labels":   labels,
+            "balances": balances,
+            "equities": equities,
+            "latest":   {
+                "balance": latest.get("balance"),
+                "equity":  latest.get("equity"),
+                "margin":  latest.get("margin"),
+                "profit":  latest.get("profit"),
+                "currency": currency,
+                "ts":      datetime.fromtimestamp(latest["timestamp"]).strftime("%Y-%m-%d %H:%M:%S") if latest.get("timestamp") else "-",
+            },
+        })
+
+    js_data = _json.dumps(js_accounts)
+
+    # Build tab buttons
+    tab_btns = ""
+    for i, acct in enumerate(js_accounts):
+        active = ' class="acct-tab-btn active"' if i == 0 else ' class="acct-tab-btn"'
+        tab_btns += f'<button{active} onclick="acctSwitch({i})">{esc(acct["label"])}</button>\n'
+
+    return f"""
+<section id="accounts-section">
+  <h2>Account Balance History</h2>
+  <div class="acct-tabs">{tab_btns}</div>
+  <div class="panel" style="padding:18px 20px">
+    <div class="grid-cards" id="acct-summary-cards" style="margin-bottom:18px"></div>
+    <canvas id="acctChart" height="90"></canvas>
+    <div style="margin-top:14px;text-align:right">
+      <button class="btn-clear-history"
+              onclick="acctClearHistory()"
+              title="Delete all history rows for this account from the local DB">
+        Clear History
+      </button>
+    </div>
+    <div id="acct-clear-msg" style="margin-top:6px;font-size:12px;color:var(--text-dim)"></div>
+  </div>
+</section>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+(function() {{
+  var ACCOUNTS = {js_data};
+  var currentIdx = 0;
+  var chartInst = null;
+
+  function fmtMoney(v, currency) {{
+    if (v == null) return '-';
+    return (v >= 0 ? '' : '-') + currency + ' ' + Math.abs(v).toLocaleString('en-US', {{minimumFractionDigits:2,maximumFractionDigits:2}});
+  }}
+
+  function renderSummary(acct) {{
+    var l = acct.latest;
+    var cur = l.currency || 'USD';
+    var balCls = (l.balance != null && l.equity != null && l.equity >= l.balance) ? 'pos' : 'neg';
+    document.getElementById('acct-summary-cards').innerHTML =
+      '<div class="card"><div class="card-label">Balance</div><div class="card-value">' + fmtMoney(l.balance, cur) + '</div></div>' +
+      '<div class="card"><div class="card-label">Equity</div><div class="card-value ' + balCls + '">' + fmtMoney(l.equity, cur) + '</div></div>' +
+      '<div class="card"><div class="card-label">Floating P&amp;L</div><div class="card-value ' + (l.profit >= 0 ? 'pos' : 'neg') + '">' + fmtMoney(l.profit, cur) + '</div></div>' +
+      '<div class="card"><div class="card-label">Last Updated</div><div class="card-value" style="font-size:13px">' + (l.ts || '-') + '</div></div>';
+  }}
+
+  function renderChart(acct) {{
+    var ctx = document.getElementById('acctChart').getContext('2d');
+    if (chartInst) {{ chartInst.destroy(); }}
+    chartInst = new Chart(ctx, {{
+      type: 'line',
+      data: {{
+        labels: acct.labels,
+        datasets: [
+          {{ label: 'Balance', data: acct.balances, borderColor: '#4f8cff', backgroundColor: 'rgba(79,140,255,0.08)', tension: 0.3, pointRadius: 2, borderWidth: 2 }},
+          {{ label: 'Equity',  data: acct.equities, borderColor: '#34d399', backgroundColor: 'rgba(52,211,153,0.06)', tension: 0.3, pointRadius: 2, borderWidth: 2, borderDash: [4,3] }}
+        ]
+      }},
+      options: {{
+        responsive: true,
+        plugins: {{ legend: {{ labels: {{ color: '#e7ecf7' }} }} }},
+        scales: {{
+          x: {{ ticks: {{ color: '#8b96b3', maxTicksLimit: 12 }}, grid: {{ color: '#232c42' }} }},
+          y: {{ ticks: {{ color: '#8b96b3' }}, grid: {{ color: '#232c42' }} }}
+        }}
+      }}
+    }});
+  }}
+
+  window.acctSwitch = function(idx) {{
+    currentIdx = idx;
+    document.querySelectorAll('.acct-tab-btn').forEach(function(b, i) {{
+      b.classList.toggle('active', i === idx);
+    }});
+    document.getElementById('acct-clear-msg').textContent = '';
+    var acct = ACCOUNTS[idx];
+    if (!acct) return;
+    if (acct.labels.length === 0) {{
+      document.getElementById('acct-summary-cards').innerHTML = '<div class="msg" style="color:var(--text-dim)">ยังไม่มีข้อมูล — รอ bot รันอย่างน้อย 1 รอบ collect</div>';
+      if (chartInst) {{ chartInst.destroy(); chartInst = null; }}
+      return;
+    }}
+    renderSummary(acct);
+    renderChart(acct);
+  }};
+
+  window.acctClearHistory = function() {{
+    var acct = ACCOUNTS[currentIdx];
+    if (!acct) return;
+    if (!confirm('ลบข้อมูล history ทั้งหมดของ "' + acct.label + '" ?\\n\\nการกระทำนี้ไม่สามารถย้อนกลับได้')) return;
+    var confirmWord = prompt('พิมพ์ "DELETE" เพื่อยืนยัน:');
+    if (confirmWord !== 'DELETE') {{ document.getElementById('acct-clear-msg').textContent = 'ยกเลิก — ไม่ได้ลบ'; return; }}
+    fetch('/api/clear_account_history?label=' + encodeURIComponent(acct.label), {{method:'POST'}})
+      .then(function(r) {{ return r.json(); }})
+      .then(function(d) {{
+        document.getElementById('acct-clear-msg').textContent = d.ok ? 'ลบสำเร็จ — รีโหลดหน้าเพื่อดูผล' : ('ล้มเหลว: ' + (d.error || '?'));
+      }})
+      .catch(function(e) {{ document.getElementById('acct-clear-msg').textContent = 'Error: ' + e; }});
+  }};
+
+  // Initial render
+  if (ACCOUNTS.length > 0) acctSwitch(0);
+}})();
+</script>
+<style>
+  .acct-tabs {{ display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }}
+  .acct-tab-btn {{
+    background: var(--panel); border: 1px solid var(--panel-border);
+    color: var(--text-dim); border-radius: 8px; padding: 6px 16px;
+    cursor: pointer; font-size: 13px; transition: all 0.15s;
+  }}
+  .acct-tab-btn.active {{ border-color: var(--accent); color: var(--accent); background: rgba(79,140,255,0.1); }}
+  .acct-tab-btn:hover {{ color: var(--text); border-color: var(--text-dim); }}
+  .btn-clear-history {{
+    background: transparent; border: 1px solid var(--bad); color: var(--bad);
+    border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 12px;
+  }}
+  .btn-clear-history:hover {{ background: rgba(248,113,113,0.12); }}
+</style>
+"""
+
+
 # HTML build
 # --------------------------------------------------------------------------
-def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, bot_status, calendar_events):
+def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, bot_status, calendar_events, accounts_data=None):
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     info = snap["info"]
 
@@ -867,6 +1053,9 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
     else:
         manual_closed_rows = "<tr><td colspan='6' class='empty'>No closed manual trades yet</td></tr>"
 
+    # ---- accounts section ----
+    accounts_section = _build_accounts_section(accounts_data or [])
+
     # ---- recent order records (strategy + MM tag) ----
     if order_records:
         order_rows = ""
@@ -1125,6 +1314,8 @@ def build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, 
   </div>
 </section>
 
+{accounts_section}
+
 <section>
   <h2>Recent Log Entries</h2>
   <div class="panel-table table-scroll">
@@ -1153,7 +1344,8 @@ def main():
     conf_snap, league_rows = collect_confluence_snapshot()
     bot_status = collect_bot_status(entries)
     calendar_events = collect_economic_calendar()
-    html = build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, bot_status, calendar_events)
+    accounts_data = collect_accounts_data()
+    html = build_html(snap, entries, order_records, log_stats, conf_snap, league_rows, bot_status, calendar_events, accounts_data)
 
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         f.write(html)

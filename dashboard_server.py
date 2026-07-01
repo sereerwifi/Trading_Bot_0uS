@@ -26,7 +26,15 @@ import base64
 import hmac
 import json
 import os
+import sys
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import account_collector as _ac
+except ImportError:
+    _ac = None
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(THIS_DIR, "strategy_config.json")
@@ -66,6 +74,30 @@ class AuthHandler(BaseHTTPRequestHandler):
         except Exception:
             return False
         return hmac.compare_digest(user, self.username) and hmac.compare_digest(pwd, self.password)
+
+    def do_POST(self):
+        if not self._check_auth():
+            self._unauthorized()
+            return
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/clear_account_history":
+            params = urllib.parse.parse_qs(parsed.query)
+            label  = (params.get("label") or [None])[0]
+            if not label:
+                body = json.dumps({"ok": False, "error": "missing label"}).encode()
+            elif _ac is None:
+                body = json.dumps({"ok": False, "error": "account_collector not available"}).encode()
+            else:
+                ok   = _ac.clear_account_history(label)
+                body = json.dumps({"ok": ok}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_GET(self):
         if not self._check_auth():

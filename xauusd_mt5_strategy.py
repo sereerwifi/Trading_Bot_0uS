@@ -90,6 +90,7 @@ import macro_data
 import symbol_normalize
 import fib_confluence
 import harmonic_patterns
+import account_collector
 
 # ----------------------------- CONFIG ---------------------------------
 SYMBOL = "GOLD"                # broker symbol name for gold spot — XM uses "GOLD",
@@ -209,6 +210,13 @@ MARKET_PRICE_SANITY_TOLERANCE_PCT = 1.0
 AUTO_TRADE = False             # safety gate — see docstring above
 POLL_SECONDS = 60 * 15         # check every 15 minutes
 MAGIC_NUMBER = 20260618
+
+# --- Multi-account balance history collector ---
+ACCOUNT_COLLECTOR_ENABLED      = True
+ACCOUNT_COLLECTOR_INTERVAL_SEC = 900   # 15 min between collection sweeps
+_ACCOUNTS_CFG    = []    # list of account dicts from strategy_config.json "accounts.list"
+_PRIMARY_LOGIN   = None  # set in main() after connect(); used by collector to skip login switch
+_last_account_collect = 0.0
 
 # --- Trailing stop ---
 # Pick ONE method. ATR and EMA are the two methods with real evidence behind
@@ -779,6 +787,12 @@ def load_ui_config(path=CONFIG_JSON_PATH):
     DAILY_STATUS_HOUR = int(notif.get("daily_status_hour", DAILY_STATUS_HOUR))
     PRE_NEWS_MINUTES = int(notif.get("pre_news_minutes", PRE_NEWS_MINUTES))
     POST_NEWS_WINDOW_MINUTES = int(notif.get("post_news_window_minutes", POST_NEWS_WINDOW_MINUTES))
+
+    global ACCOUNT_COLLECTOR_ENABLED, ACCOUNT_COLLECTOR_INTERVAL_SEC, _ACCOUNTS_CFG
+    ac_cfg = cfg.get("accounts", {})
+    ACCOUNT_COLLECTOR_ENABLED      = bool(ac_cfg.get("enabled", ACCOUNT_COLLECTOR_ENABLED))
+    ACCOUNT_COLLECTOR_INTERVAL_SEC = int(ac_cfg.get("collect_interval_sec", ACCOUNT_COLLECTOR_INTERVAL_SEC))
+    _ACCOUNTS_CFG = ac_cfg.get("list", [])
 
     logger.info(f"Loaded config from {path}. Enabled strategies: {sorted(CONFLUENCE_ENABLED_STRATEGIES)}")
     logger.info(f"Entry mode: {ENTRY_MODE}"
@@ -3179,6 +3193,19 @@ def run_once():
             send_telegram(msg)
 
 
+def _run_account_collector():
+    """Throttled wrapper around account_collector.collect_accounts().
+    Runs at most once every ACCOUNT_COLLECTOR_INTERVAL_SEC seconds."""
+    global _last_account_collect
+    if time.time() - _last_account_collect < ACCOUNT_COLLECTOR_INTERVAL_SEC:
+        return
+    try:
+        account_collector.collect_accounts(_ACCOUNTS_CFG, _PRIMARY_LOGIN)
+    except Exception:
+        logger.exception("[account_collector] Unexpected error in collect_accounts")
+    _last_account_collect = time.time()
+
+
 def main():
     global _LAST_CONFIG_MTIME
     load_ui_config()
@@ -3191,6 +3218,9 @@ def main():
     except Exception:
         logger.exception("Failed to connect to MT5 — aborting startup.")
         return
+
+    global _PRIMARY_LOGIN
+    _PRIMARY_LOGIN = startup_account_info.login
 
     # Record this process's start time for the dashboard's uptime display.
     # Once per launch — restarting the EA resets the clock, as expected.
@@ -3237,6 +3267,12 @@ def main():
                 # Capture any manually placed/closed trades so they appear in
                 # the combined P&L on the dashboard.
                 track_manual_trades()
+
+                # Multi-account balance history — collects snapshots for all
+                # accounts in strategy_config.json "accounts.list" at most
+                # once every ACCOUNT_COLLECTOR_INTERVAL_SEC (default 15 min).
+                if ACCOUNT_COLLECTOR_ENABLED and _ACCOUNTS_CFG:
+                    _run_account_collector()
 
                 # (5)-(8) Periodic Telegram notifications — each function is
                 # self-throttled internally (interval/dedup-state checks), so
