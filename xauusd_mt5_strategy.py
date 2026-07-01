@@ -1587,13 +1587,26 @@ def check_daily_loss_limit(balance):
     return False, None
 
 
+def _bot_opened_position_ids(deals):
+    """Set of position_ids opened by this EA (magic==MAGIC_NUMBER, DEAL_ENTRY_IN).
+    Used to recognise closing deals whose magic is 0 because the user closed
+    the position manually in MT5."""
+    return {d.position_id for d in deals
+            if d.magic == MAGIC_NUMBER and d.entry == mt5.DEAL_ENTRY_IN}
+
+
 def get_today_closed_deals_ordered():
-    """This EA's closing deals (DEAL_ENTRY_OUT) since midnight, oldest first."""
+    """This EA's closing deals (DEAL_ENTRY_OUT) since midnight, oldest first.
+    Includes positions closed manually in MT5 (closing deal has magic==0)
+    by matching position_id against the EA's opening deals."""
     start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     deals = mt5.history_deals_get(start, datetime.now())
     if not deals:
         return []
-    out_deals = [d for d in deals if d.magic == MAGIC_NUMBER and d.entry == mt5.DEAL_ENTRY_OUT]
+    bot_pos_ids = _bot_opened_position_ids(deals)
+    out_deals = [d for d in deals
+                 if d.entry == mt5.DEAL_ENTRY_OUT
+                 and (d.magic == MAGIC_NUMBER or d.position_id in bot_pos_ids)]
     return sorted(out_deals, key=lambda d: d.time)
 
 
@@ -2702,7 +2715,10 @@ def update_league_from_closed_trades():
     processed = set(_load_json(PROCESSED_DEALS_PATH, []))
     start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     deals = mt5.history_deals_get(start, datetime.now()) or []
-    out_deals = [d for d in deals if d.magic == MAGIC_NUMBER and d.entry == mt5.DEAL_ENTRY_OUT]
+    bot_pos_ids = _bot_opened_position_ids(deals)
+    out_deals = [d for d in deals
+                 if d.entry == mt5.DEAL_ENTRY_OUT
+                 and (d.magic == MAGIC_NUMBER or d.position_id in bot_pos_ids)]
     if not out_deals:
         return
 

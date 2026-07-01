@@ -180,11 +180,15 @@ def _collect_perf_stats(info):
             return stats
 
         # DEAL_ENTRY_OUT=1 (exit of a position), DEAL_ENTRY_INOUT=3 (reverse)
+        # Build set of position IDs the bot opened so that positions closed
+        # manually in MT5 (closing deal magic==0) are still counted.
+        bot_pos_ids = {d.position_id for d in raw
+                       if d.magic == ea.MAGIC_NUMBER and d.entry == 0}
         all_deals = []
         for d in raw:
-            if d.magic != ea.MAGIC_NUMBER:
-                continue
             if d.entry not in (1, 3):
+                continue
+            if d.magic != ea.MAGIC_NUMBER and d.position_id not in bot_pos_ids:
                 continue
             pnl = d.profit + d.swap + d.commission
             all_deals.append((datetime.fromtimestamp(d.time), pnl))
